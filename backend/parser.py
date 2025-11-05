@@ -228,10 +228,25 @@ class IncompletePythonParser:
         """Insert stub declarations into the code."""
         lines = code.split('\n')
 
-        # Sort stubs by insert line (in reverse to maintain line numbers)
-        sorted_stubs = sorted(self.stubs, key=lambda s: s.insert_line, reverse=True)
+        # Separate stubs into insertions and replacements
+        insertions = []  # Function stubs - insert before usage
+        replacements = {}  # Variable/NL stubs - replace the original line
 
-        for stub in sorted_stubs:
+        for stub in self.stubs:
+            if stub.type == 'function':
+                insertions.append(stub)
+            elif stub.type == 'variable':
+                # For variables, replace the original line
+                replacements[stub.original_line - 1] = stub.code
+
+        # First, handle replacements
+        for line_idx, stub_code in replacements.items():
+            if 0 <= line_idx < len(lines):
+                lines[line_idx] = stub_code
+
+        # Then handle insertions (in reverse to maintain line numbers)
+        sorted_insertions = sorted(insertions, key=lambda s: s.insert_line, reverse=True)
+        for stub in sorted_insertions:
             insert_idx = max(0, stub.insert_line)
             if insert_idx <= len(lines):
                 # Don't insert if it would duplicate

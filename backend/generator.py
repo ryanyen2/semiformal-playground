@@ -49,7 +49,7 @@ class CodeGenerator:
         response = self.client.chat.completions.create(
             model=self.model,
             messages=[
-                {"role": "system", "content": "You are an expert Python programmer. Generate clean, efficient Python code based on specifications."},
+                {"role": "system", "content": "You are an expert Python programmer. Generate clean, efficient Python code. Provide ONLY the Python code without any markdown formatting, explanations, or code fences."},
                 {"role": "user", "content": prompt}
             ],
             temperature=0.7,
@@ -86,19 +86,26 @@ Context:
 {context}
 ```
 
-Provide only the right-hand side of the assignment (the expression), without the variable name or '='."""
+Provide ONLY the right-hand side expression, without the variable name, without '=', and without any markdown code fences.
+Just the Python expression itself."""
 
         response = self.client.chat.completions.create(
             model=self.model,
             messages=[
-                {"role": "system", "content": "You are an expert Python programmer. Generate concise Python expressions."},
+                {"role": "system", "content": "You are an expert Python programmer. Generate concise Python expressions without any markdown formatting."},
                 {"role": "user", "content": prompt}
             ],
             temperature=0.7,
             max_tokens=200
         )
 
-        return response.choices[0].message.content.strip()
+        # Clean the response
+        expr = response.choices[0].message.content.strip()
+        # Remove any markdown code fences
+        expr = expr.replace('```python', '').replace('```py', '').replace('```', '').strip()
+        # Remove any trailing newlines or extra whitespace
+        expr = ' '.join(expr.split())
+        return expr
 
     def regenerate_with_constraints(
         self,
@@ -129,12 +136,12 @@ Current implementation:
 Constraint type: {constraint_type}
 New constraint: {new_constraint}
 
-Generate the complete updated function implementation."""
+Generate the complete updated function implementation. Provide ONLY the Python code without markdown fences or explanations."""
 
         response = self.client.chat.completions.create(
             model=self.model,
             messages=[
-                {"role": "system", "content": "You are an expert Python programmer. Update code based on new constraints."},
+                {"role": "system", "content": "You are an expert Python programmer. Update code based on new constraints. Provide ONLY Python code without any markdown formatting."},
                 {"role": "user", "content": prompt}
             ],
             temperature=0.7,
@@ -167,27 +174,45 @@ Usage context:
 ```
 {constraints_str}
 
-Provide a complete, working Python function implementation."""
+Provide a complete, working Python function implementation. Output ONLY the Python code without any markdown code fences, explanations, or formatting."""
 
     def _extract_code(self, response: str) -> str:
         """Extract clean Python code from LLM response."""
-        # Remove markdown code fences if present
-        lines = response.strip().split('\n')
+        response = response.strip()
 
-        # Find code block boundaries
+        # Remove markdown code fences if present
+        lines = response.split('\n')
+
+        # Find and remove code block boundaries
         start_idx = 0
         end_idx = len(lines)
 
         for i, line in enumerate(lines):
-            if line.strip().startswith('```'):
+            stripped = line.strip()
+            if stripped.startswith('```'):
                 if start_idx == 0:
                     start_idx = i + 1
                 else:
                     end_idx = i
                     break
 
-        code_lines = lines[start_idx:end_idx]
-        return '\n'.join(code_lines).strip()
+        # If we found fences, extract only the code between them
+        if start_idx > 0:
+            code_lines = lines[start_idx:end_idx]
+        else:
+            code_lines = lines
+
+        # Remove any remaining stray backticks or markdown
+        cleaned_lines = []
+        for line in code_lines:
+            # Remove lines that are just backticks
+            if line.strip() in ('```', '```python', '```py'):
+                continue
+            # Remove inline code fence artifacts
+            line = line.replace('```python', '').replace('```py', '').replace('```', '')
+            cleaned_lines.append(line)
+
+        return '\n'.join(cleaned_lines).strip()
 
 
 class IncrementalGenerator:
@@ -270,12 +295,18 @@ class IncrementalGenerator:
             line = lines[i]
 
             # Check if this is the stub definition
-            if f"def {func_name}(" in line and i + 1 < len(lines) and "..." in lines[i + 1]:
-                # Skip the stub (def line and ... line)
-                result.append(implementation)
-                i += 2
-                # Skip blank line after stub if present
-                if i < len(lines) and not lines[i].strip():
+            if f"def {func_name}(" in line:
+                # Check if next line is the ellipsis stub
+                if i + 1 < len(lines) and "..." in lines[i + 1]:
+                    # Replace the entire stub with the implementation
+                    result.append(implementation)
+                    i += 2  # Skip both def line and ... line
+                    # Skip blank line after stub if present
+                    if i < len(lines) and not lines[i].strip():
+                        i += 1
+                else:
+                    # Not a stub, keep the line
+                    result.append(line)
                     i += 1
             else:
                 result.append(line)
