@@ -52,7 +52,7 @@ class CodeGenerator:
                 {"role": "system", "content": "You are an expert Python programmer. Generate clean, efficient Python code based on specifications."},
                 {"role": "user", "content": prompt}
             ],
-            temperature=0.7,
+            temperature=0.2,
             max_tokens=1000
         )
 
@@ -67,7 +67,7 @@ class CodeGenerator:
     ) -> str:
         """
         Generate a Python expression from natural language.
-
+`
         Args:
             var_name: Variable name
             nl_description: Natural language description
@@ -94,7 +94,7 @@ Provide only the right-hand side of the assignment (the expression), without the
                 {"role": "system", "content": "You are an expert Python programmer. Generate concise Python expressions."},
                 {"role": "user", "content": prompt}
             ],
-            temperature=0.7,
+            temperature=0.2,
             max_tokens=200
         )
 
@@ -137,7 +137,7 @@ Generate the complete updated function implementation."""
                 {"role": "system", "content": "You are an expert Python programmer. Update code based on new constraints."},
                 {"role": "user", "content": prompt}
             ],
-            temperature=0.7,
+            temperature=0.2,
             max_tokens=1000
         )
 
