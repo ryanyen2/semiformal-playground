@@ -1,27 +1,24 @@
 /**
- * Main entry point for the semiformal programming playground.
+ * Main entry point for IR-based bidirectional programming.
+ * 
+ * New workflow:
+ * - Continuous parsing as user edits spec
+ * - Generation triggered on Cmd+S (save)
+ * - No manual buttons
+ * - Real-time feedback via decorations
  */
 
-import { EditorView } from '@codemirror/view'
-import { createEditor, getEditorContent, setEditorContent, detectChanges } from './editor'
+import { EditorView, keymap } from '@codemirror/view'
+import { createEditor, getEditorContent, setEditorContent } from './editor'
 import { DecorationManager, createDecorationPlugin } from './decorations'
-import { SyncManager, analyzeSpecChange, analyzeCodeChange } from './sync'
+import { analyzeSpec, generateCode, syncCodeToSpec, generateSkeleton, IncompleteNode } from './api'
 
 // Initial example code
-const EXAMPLE_SPEC = `# Semiformal Python Example
-# Try writing incomplete code!
+const EXAMPLE_SPEC = `result = process_data(raw_input)
 
-# Example 1: Function without declaration
-result = process_data(raw_input)
-
-# Example 2: Variable with natural language
 x = split dataset into training and test sets
 
-# Example 3: Function call with stub
 output = transform(x)
-
-def transform(data):
-    ...
 
 print(result, x, output)
 `
@@ -30,10 +27,17 @@ print(result, x, output)
 let specEditor: EditorView
 let codeEditor: EditorView
 let specDecorationManager: DecorationManager
-let syncManager: SyncManager
 
 let lastSpecContent = EXAMPLE_SPEC
 let lastCodeContent = ''
+let isGenerating = false
+
+// Debounce timer for continuous analysis
+let analysisTimer: number | null = null
+const ANALYSIS_DEBOUNCE_MS = 500
+
+// Session ID for this editing session
+const SESSION_ID = `session-${Date.now()}`
 
 // Status bar management
 function showStatus(message: string, type: 'info' | 'error' | 'success' = 'info') {
@@ -53,14 +57,12 @@ function showStatus(message: string, type: 'info' | 'error' | 'success' = 'info'
 
 // Initialize application
 function init() {
-  console.log('Initializing Semiformal Programming Playground...')
+  console.log('Initializing IR-based Semiformal Programming...')
 
   // Initialize managers
   specDecorationManager = new DecorationManager()
-  syncManager = new SyncManager()
-  syncManager.updateSpecCode(EXAMPLE_SPEC)
 
-  // Create spec editor
+  // Create spec editor with save handler
   const specContainer = document.getElementById('spec-editor')
   if (!specContainer) {
     console.error('Spec editor container not found')
@@ -74,7 +76,15 @@ function init() {
     false
   )
 
-  // Create code editor
+  // Add Cmd+S / Ctrl+S handler for generation
+  specEditor.dom.addEventListener('keydown', (e: KeyboardEvent) => {
+    if ((e.metaKey || e.ctrlKey) && e.key === 's') {
+      e.preventDefault()
+      handleSave()
+    }
+  })
+
+  // Create code editor (read-only view)
   const codeContainer = document.getElementById('code-editor')
   if (!codeContainer) {
     console.error('Code editor container not found')
@@ -83,124 +93,193 @@ function init() {
 
   codeEditor = createEditor(
     codeContainer,
-    '# Generated code will appear here',
+    '# Generated code will appear here\n# Press Cmd+S (or Ctrl+S) in the spec editor to generate',
     [],
     false
   )
 
-  // Set up event listeners
-  setupEventListeners()
+  // Set up continuous analysis
+  setupContinuousAnalysis()
 
-  // Listen for changes in spec editor
-  specEditor.dom.addEventListener('blur', handleSpecChange)
-
-  // Listen for changes in code editor
-  codeEditor.dom.addEventListener('blur', handleCodeChange)
+  // Hide buttons (or remove them from HTML)
+  hideButtons()
 
   console.log('Initialization complete!')
-  showStatus('Ready! Try editing the semiformal code and click "Generate Code"', 'success')
+  showStatus('Ready! Edit spec on the left, press Cmd+S to generate code', 'success')
+
+  // Initial analysis
+  performAnalysis()
 }
 
-// Set up button event listeners
-function setupEventListeners() {
-  const parseBtn = document.getElementById('parseBtn')
-  const generateBtn = document.getElementById('generateBtn')
-  const syncToSpecBtn = document.getElementById('syncToSpecBtn')
-
-  parseBtn?.addEventListener('click', handleParse)
-  generateBtn?.addEventListener('click', handleGenerate)
-  syncToSpecBtn?.addEventListener('click', handleSyncToSpec)
+function hideButtons() {
+  /**
+   * Hide manual buttons since we have automatic workflow.
+   */
+  const buttons = ['parseBtn', 'generateBtn', 'syncToSpecBtn']
+  buttons.forEach(id => {
+    const btn = document.getElementById(id)
+    if (btn) {
+      btn.style.display = 'none'
+    }
+  })
 }
 
-// Handle parse button click
-async function handleParse() {
+function setupContinuousAnalysis() {
+  /**
+   * Set up continuous parsing as user edits.
+   */
+  // Listen for changes in spec editor
+  const updateListener = EditorView.updateListener.of((update) => {
+    if (update.docChanged) {
+      // Debounce analysis
+      if (analysisTimer) {
+        clearTimeout(analysisTimer)
+      }
+
+      analysisTimer = window.setTimeout(() => {
+        performAnalysis()
+      }, ANALYSIS_DEBOUNCE_MS)
+    }
+  })
+
+  // Add listener to spec editor
+  specEditor.dispatch({
+    effects: [
+      // Note: This is simplified; proper implementation would add the listener
+      // during editor creation in editor.ts
+    ]
+  })
+
+  // Alternative: use MutationObserver or poll (less ideal)
+  setInterval(() => {
+    const currentContent = getEditorContent(specEditor)
+    if (currentContent !== lastSpecContent) {
+      lastSpecContent = currentContent
+      performAnalysis()
+    }
+  }, ANALYSIS_DEBOUNCE_MS)
+}
+
+async function performAnalysis() {
+  /**
+   * Continuously analyze spec and generate skeleton (real-time sync).
+   */
+  const specCode = getEditorContent(specEditor)
+
   try {
-    showStatus('Parsing...', 'info')
-    const specCode = getEditorContent(specEditor)
-    syncManager.updateSpecCode(specCode)
+    // Generate skeleton immediately (no LLM, fast)
+    const skeletonResult = await generateSkeleton(specCode, SESSION_ID)
+    
+    // Update Python editor with skeleton
+    setEditorContent(codeEditor, skeletonResult.skeleton_code)
 
-    const result = await syncManager.parseSpec()
+    // Update decorations to show incomplete parts
+    updateDecorations(skeletonResult.incomplete_nodes)
 
-    // Update decorations
-    specDecorationManager.updateIncompleteParts(result.incomplete_parts)
-    specDecorationManager.updateStubs(result.stubs)
+    // Update status bar
+    const incompleteCount = skeletonResult.incomplete_nodes.length
+    if (incompleteCount > 0) {
+      showStatus(
+        `${incompleteCount} incomplete element${incompleteCount > 1 ? 's' : ''} - Press Cmd+S to generate`,
+        'info'
+      )
+    } else {
+      showStatus('All elements complete', 'success')
+    }
 
-    // Show annotated code in the spec editor
-    setEditorContent(specEditor, result.annotated_code)
-    lastSpecContent = result.annotated_code
-    syncManager.updateSpecCode(result.annotated_code)
-
-    showStatus(
-      `Parsed: ${result.incomplete_parts.length} incomplete parts, ${result.stubs.length} stubs created`,
-      'success'
-    )
   } catch (error) {
-    console.error('Parse error:', error)
-    showStatus(`Parse error: ${error instanceof Error ? error.message : String(error)}`, 'error')
+    console.error('Analysis error:', error)
+    // Don't show error toast for every analysis failure
   }
 }
 
-// Handle generate button click
-async function handleGenerate() {
-  try {
-    showStatus('Generating code with LLM...', 'info')
-    const specCode = getEditorContent(specEditor)
-    syncManager.updateSpecCode(specCode)
+function updateDecorations(incompleteNodes: IncompleteNode[]) {
+  /**
+   * Update editor decorations based on incomplete nodes.
+   */
+  specDecorationManager.updateIncompleteParts(
+    incompleteNodes.map(node => ({
+      type: node.type as "function" | "variable" | "nl_text",
+      name: node.name,
+      line: node.line,
+      col: 0,
+      context: node.spec_text,
+      value: node.metadata?.rhs ?? ''
+    }))
+  )
+}
 
-    const result = await syncManager.generateFromSpec()
+async function handleSave() {
+  /**
+   * Handle Cmd+S: trigger code generation.
+   */
+  if (isGenerating) {
+    showStatus('Generation already in progress...', 'info')
+    return
+  }
+
+  isGenerating = true
+  showStatus('Generating code...', 'info')
+
+  const specCode = getEditorContent(specEditor)
+
+  try {
+    const result = await generateCode(specCode, SESSION_ID)
 
     // Update code editor
-    setEditorContent(codeEditor, result.code)
-    lastCodeContent = result.code
+    setEditorContent(codeEditor, result.generated_code)
+    lastCodeContent = result.generated_code
 
-    showStatus(result.message, 'success')
+    // Show success
+    showStatus(
+      `✓ Generated code (${result.affected_nodes.length} elements)`,
+      'success'
+    )
+
+    // Optionally show diffs in console
+    if (result.diffs.length > 0) {
+      console.log('Generated diffs:')
+      result.diffs.forEach(diff => {
+        console.log(diff.diff_text)
+      })
+    }
+
   } catch (error) {
     console.error('Generation error:', error)
     showStatus(
       `Generation error: ${error instanceof Error ? error.message : String(error)}`,
       'error'
     )
+  } finally {
+    isGenerating = false
   }
 }
 
-// Handle spec changes (automatic sync to code)
-async function handleSpecChange() {
-  const currentContent = getEditorContent(specEditor)
+async function handleCodeEdit() {
+  /**
+   * Handle code editor changes (sync back to spec).
+   * 
+   * For now, this is manual. Could be automatic or triggered by save.
+   */
+  const currentCode = getEditorContent(codeEditor)
 
-  if (currentContent === lastSpecContent) {
-    return // No changes
-  }
-
-  const change = detectChanges(lastSpecContent, currentContent)
-  if (!change) {
+  if (currentCode === lastCodeContent) {
     return
   }
 
   try {
-    // Analyze the change
-    const action = analyzeSpecChange(lastSpecContent, currentContent, change)
+    const specCode = getEditorContent(specEditor)
+    const result = await syncCodeToSpec(specCode, lastCodeContent, currentCode, SESSION_ID)
 
-    if (action.type !== 'none') {
-      showStatus(`Syncing ${action.type}...`, 'info')
+    // Update spec editor
+    setEditorContent(specEditor, result.updated_spec)
+    lastSpecContent = result.updated_spec
+    lastCodeContent = currentCode
 
-      // Update sync manager state
-      syncManager.updateSpecCode(currentContent)
-      const currentCodeContent = getEditorContent(codeEditor)
-      syncManager.updateGeneratedCode(currentCodeContent)
+    showStatus('✓ Synced code changes to spec', 'success')
 
-      // Perform sync
-      const updatedCode = await syncManager.syncSpecToCode(action)
-
-      // Update code editor
-      setEditorContent(codeEditor, updatedCode)
-      lastCodeContent = updatedCode
-
-      showStatus(`Synced ${action.type} to code`, 'success')
-    }
-
-    lastSpecContent = currentContent
   } catch (error) {
-    console.error('Spec sync error:', error)
+    console.error('Sync error:', error)
     showStatus(
       `Sync error: ${error instanceof Error ? error.message : String(error)}`,
       'error'
@@ -208,65 +287,33 @@ async function handleSpecChange() {
   }
 }
 
-// Handle code changes (manual sync back to spec via button)
-async function handleCodeChange() {
-  // Just track changes, don't auto-sync
-  lastCodeContent = getEditorContent(codeEditor)
-}
+// Keyboard shortcut hints
+function showShortcutHints() {
+  const hints = [
+    'Cmd+S / Ctrl+S: Generate code from spec',
+    'Continuous parsing: automatic as you type',
+  ]
 
-// Handle sync to spec button click
-async function handleSyncToSpec() {
-  const currentCodeContent = getEditorContent(codeEditor)
-  const currentSpecContent = getEditorContent(specEditor)
-
-  const change = detectChanges(
-    syncManager.getState().generatedCode,
-    currentCodeContent
-  )
-
-  if (!change) {
-    showStatus('No changes to sync', 'info')
-    return
-  }
-
-  try {
-    showStatus('Syncing changes to spec...', 'info')
-
-    // Analyze the change
-    const action = analyzeCodeChange(
-      syncManager.getState().generatedCode,
-      currentCodeContent,
-      change
-    )
-
-    if (action.type !== 'none') {
-      // Update sync manager state
-      syncManager.updateSpecCode(currentSpecContent)
-      syncManager.updateGeneratedCode(currentCodeContent)
-
-      // Perform sync
-      const updatedSpec = await syncManager.syncCodeToSpec(action)
-
-      // Update spec editor
-      setEditorContent(specEditor, updatedSpec)
-      lastSpecContent = updatedSpec
-
-      showStatus('Synced code changes to spec', 'success')
-    } else {
-      showStatus('No significant changes to sync', 'info')
-    }
-  } catch (error) {
-    console.error('Code sync error:', error)
-    showStatus(
-      `Sync error: ${error instanceof Error ? error.message : String(error)}`,
-      'error'
-    )
-  }
+  console.log('Keyboard shortcuts:')
+  hints.forEach(hint => console.log(`  ${hint}`))
 }
 
 // Start the application when DOM is ready
 if (document.readyState === 'loading') {
-  document.addEventListener('DOMContentLoaded', init)
+  document.addEventListener('DOMContentLoaded', () => {
+    init()
+    showShortcutHints()
+  })
 } else {
   init()
+  showShortcutHints()
 }
+
+// Export for debugging
+;(window as any).debugIR = {
+  getSpec: () => getEditorContent(specEditor),
+  getCode: () => getEditorContent(codeEditor),
+  analyze: performAnalysis,
+  generate: handleSave,
+}
+

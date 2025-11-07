@@ -1,8 +1,8 @@
 #!/bin/bash
 
-# Start the frontend development server
+# Start the IR-based frontend development server (NEW default)
 
-echo "Starting Semiformal Programming Frontend..."
+echo "Starting Semiformal Programming Frontend (IR-based)..."
 
 cd frontend
 
@@ -12,6 +12,18 @@ if [ ! -d "node_modules" ]; then
     npm install
 fi
 
-# Start the dev server
-echo "Starting Vite dev server on port 3000..."
-npm run dev
+# Start the NEW IR-based dev server
+echo ""
+echo "🚀 Starting IR-based frontend on http://localhost:5173"
+echo "   Features:"
+echo "   - Automatic parsing (no parse button)"
+echo "   - Save-triggered generation (Cmd+S / Ctrl+S)"
+echo "   - Real-time decorations and feedback"
+echo "   - No manual buttons - fully automatic workflow!"
+echo ""
+echo "   Note: This is the NEW IR-based frontend."
+echo "   For the old frontend, use: ./start-frontend-legacy.sh"
+echo ""
+echo "Opening browser at: http://localhost:5173/index.html"
+
+npm run dev -- --open /index.html

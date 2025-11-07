@@ -8,25 +8,42 @@ venv/
 env/
 ENV/
 .venv
+pip-log.txt
+pip-delete-this-directory.txt
+.pytest_cache/
+.coverage
+htmlcov/
 
 # Node
 node_modules/
 dist/
-build/
-*.log
-.npm
-.eslintcache
+.vite/
+*.local
+
+# Environment
+.env
+.env.local
+.env.*.local
 
 # IDE
 .vscode/
 .idea/
 *.swp
 *.swo
-
-# Environment
-.env
-.env.local
-
-# OS
+*~
 .DS_Store
-Thumbs.db
+
+# Logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Test
+.pytest_cache/
+coverage/
+
+# Build
+build/
+dist/
+*.egg-info/

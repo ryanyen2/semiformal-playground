@@ -1,8 +1,8 @@
 #!/bin/bash
 
-# Start the Python backend server
+# Start the IR-based backend server (NEW default)
 
-echo "Starting Semiformal Programming Backend..."
+echo "Starting Semiformal Programming Backend (IR-based)..."
 
 # Check if venv exists
 if [ ! -d "venv" ]; then
@@ -21,11 +21,25 @@ pip install -r requirements.txt
 if [ ! -f ".env" ]; then
     echo "Warning: .env file not found!"
     echo "Please create a .env file with your OPENAI_API_KEY"
-    echo "You can copy .env.example and fill in your API key"
-    exit 1
+    echo ""
+    echo "Example:"
+    echo "  echo 'OPENAI_API_KEY=your-key-here' > .env"
+    echo ""
+    echo "Continuing without API key (parsing will work, generation will fail)..."
 fi
 
-# Start the server
-echo "Starting FastAPI server on port 8000..."
+# Start the NEW IR-based server
+echo ""
+echo "🚀 Starting IR-based backend server on http://localhost:8000"
+echo "   Features:"
+echo "   - AST-based parsing with dependency analysis"
+echo "   - Shared IR with lens mechanisms"
+echo "   - Unified-diff code generation"
+echo "   - WebSocket support for real-time sync"
+echo ""
+echo "   Note: This is the NEW IR-based backend."
+echo "   For the old backend, use: ./start-backend-legacy.sh"
+echo ""
+
 cd backend
 python main.py
