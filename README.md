@@ -8,12 +8,18 @@ This project enables users to write incomplete Python code with:
 - Function identifiers without declarations
 - Variables without concrete assigned values
 - Natural language expressions
+- Hole syntax `{}` for LLM completion with optional hints
 
 The system automatically:
 - Parses incomplete code using AST analysis
 - Creates stub declarations with placeholders
-- Generates complete code using LLM (GPT-4o)
+- Generates complete code using LLM (OpenAI GPT-4o)
 - Maintains bidirectional synchronization between specs and generated code
+
+## Documentation
+
+- **[MVP Architecture](MVP_ARCHITECTURE.md)** - Detailed MVP design with CodeMirror + OpenAI
+- **[Edit Mapping Table](EDIT_MAPPING_TABLE.md)** - Comprehensive mapping of all 71+ edit types
 
 ## Project Structure
 
