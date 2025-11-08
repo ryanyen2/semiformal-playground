@@ -1,196 +1,288 @@
 # Semiformal Programming Playground
 
-A bidirectional programming environment for semiformal Python code with CodeMirror.
+A bidirectional programming environment for semiformal Python code with CodeMirror and OpenAI.
 
 ## Overview
 
-This project enables users to write incomplete Python code with:
-- Function identifiers without declarations
-- Variables without concrete assigned values
-- Natural language expressions
+This project enables users to write semiformal Python code mixing:
+- **Python code**: Regular Python syntax
+- **Natural language**: Plain English descriptions (e.g., `result = load the dataset`)
+- **Holes**: `{}` for empty holes, `{hint text}` for hints
+- **Placeholders**: Incomplete values that need filling
 
 The system automatically:
-- Parses incomplete code using AST analysis
-- Creates stub declarations with placeholders
-- Generates complete code using LLM (GPT-4o)
-- Maintains bidirectional synchronization between specs and generated code
+- **Parses** semiformal code into intent nodes (auto-debounced, 1 second after typing stops)
+- **Generates** complete Python code using OpenAI GPT-4o-mini
+- **Decorates** the editor with visual cues for NL, holes, and placeholders
+- **Maintains** bidirectional synchronization
 
-## Project Structure
+## Quick Start
 
-```
-semiformal-playground/
-├── backend/           # Python FastAPI backend
-│   ├── main.py       # API server
-│   ├── parser.py     # AST-based incomplete code parser
-│   ├── generator.py  # LLM code generation
-│   └── sync.py       # Bidirectional sync logic
-├── frontend/         # TypeScript + CodeMirror frontend
-│   └── src/
-│       ├── editor.ts # CodeMirror setup
-│       ├── decorations.ts # Code decorations
-│       └── sync.ts   # Sync logic
-└── requirements.txt  # Python dependencies
-```
-
-## Prerequisites
-
-- Python 3.8 or higher
-- Node.js 18 or higher
-- OpenAI API key (for code generation)
-
-## Setup
-
-### Quick Start
-
-1. **Clone and navigate to the project**
-   ```bash
-   cd semiformal-playground
-   ```
-
-2. **Set up environment variables**
-   ```bash
-   cp .env.example .env
-   # Edit .env and add your OpenAI API key
-   ```
-
-3. **Start the backend** (in one terminal)
-   ```bash
-   ./start-backend.sh
-   ```
-
-4. **Start the frontend** (in another terminal)
-   ```bash
-   ./start-frontend.sh
-   ```
-
-5. **Open your browser**
-   Navigate to http://localhost:3000
-
-### Manual Setup
-
-#### Backend
+### 1. Set up environment
 ```bash
-# Create virtual environment
-python3 -m venv venv
-source venv/bin/activate  # On Windows: venv\Scripts\activate
-
-# Install dependencies
-pip install -r requirements.txt
-
-# Set up environment
-cp .env.example .env
-# Edit .env and add your OPENAI_API_KEY
-
-# Run the server
-cd backend
-python main.py
+# Create .env file with your OpenAI API key
+echo "OPENAI_API_KEY=your-key-here" > .env
 ```
 
-The backend will start on http://localhost:8000
+### 2. Start the MVP backend
+```bash
+cd backend
+python -m venv venv
+source venv/bin/activate  # On Windows: venv\Scripts\activate
+pip install -r ../requirements.txt
+python mvp_main.py
+```
 
-#### Frontend
+The backend starts on **http://localhost:8001**
+
+### 3. Start the frontend
 ```bash
 cd frontend
 npm install
 npm run dev
 ```
 
-The frontend will start on http://localhost:3000
+The frontend starts on **http://localhost:3000**
+
+## Usage
+
+The UI is designed to be **clean and automatic** with no manual buttons:
+
+### Auto-Parsing (1-second debounce)
+- **Type** in the left editor (Semiformal Code)
+- **Wait 1 second** - the parser runs automatically
+- **See decorations**: Natural language phrases in green italic, holes with dotted underlines
+
+### Generate Python Code (Cmd+S)
+- **Press Cmd+S** (or Ctrl+S) in the semiformal editor
+- **Python code** is generated in the right editor
+- **No buttons needed** - all sync happens automatically
+
+### Visual Decorations
+- **Natural language**: Green italic text
+- **Holes `{}`**: Yellow dotted underline
+- **Holes with hints `{text}`**: Purple dotted underline
+- **Placeholders**: Teal left border
+- **Cursor mapping**: Blue highlight when cursor is on a node
+
+### Status Indicators
+- **Parsing dot**: Yellow pulse while parsing
+- **Generating dot**: Purple pulse while generating
+- **Ready dot**: Green pulse when idle
+- **Status bar**: Shows node count and LLM availability
+
+## Project Structure
+
+```
+semiformal-playground/
+├── backend/
+│   ├── mvp_config.py      # Configuration system
+│   ├── mvp_parser.py      # Semiformal → Intent Nodes
+│   ├── mvp_generator.py   # Intent Nodes → Python (with OpenAI)
+│   ├── mvp_translator.py  # Edit translation
+│   ├── mvp_edit.py        # Direct AST operations
+│   ├── mvp_editor.py      # Main orchestrator
+│   └── mvp_main.py        # FastAPI server (port 8001)
+├── frontend/
+│   ├── index.html         # Clean UI with no manual buttons
+│   └── src/
+│       ├── api.ts         # MVP backend API client
+│       ├── editor.ts      # CodeMirror setup
+│       ├── decorations.ts # Node-based decorations
+│       └── index.ts       # Auto-parse + Cmd+S generation
+├── EDIT_MAPPING_TABLE.md  # 71 semiformal→Python edit types
+├── MVP_ARCHITECTURE.md    # Complete architecture spec
+├── test_mvp.py           # MVP test suite
+└── test_edge_cases.py    # 31 edge case tests
+```
+
+## MVP Implementation Phases
+
+### ✅ Phase 1: Direct AST Edits (36.6% of edits)
+- Identifier renames
+- Operator changes (+, -, *, /)
+- Literal value changes
+- Parameter additions/removals
+- Statement insertions/deletions
+
+**No LLM needed** - uses Python AST manipulation directly.
+
+### ✅ Phase 2: Placeholder Support (18.3% of edits)
+- Add variable to LHS when RHS is unknown
+- Incomplete expressions with `None` placeholders
+- Mark targets for regeneration
+
+### ✅ Phase 3: Hole Syntax + LLM (35.2% of edits)
+- `{}` - Empty hole, LLM fills based on context
+- `{hint}` - Hole with hint text for LLM
+- Natural language phrases
+- Full LLM-based code generation
+
+### 📋 Phase 4-6: Advanced Features (Future)
+- Cross-function edits
+- Multi-statement NL blocks
+- Context-aware regeneration
+- Advanced dependency tracking
 
 ## Features
 
-### Spec → Code Synchronization
-- Parameter additions → direct code update + body regeneration
-- Function renames → downstream call updates (no LLM)
-- Statement insertions → dependency-aware placement
-- Comments/incomplete code → added as constraints + regeneration
+### Automatic Bidirectional Sync
+- **Semiformal → Python**: Changes automatically update generated code
+- **Python → Semiformal**: Edits to Python can propagate back (transient vs semantic)
+- **No manual buttons**: Everything happens automatically
 
-### Code → Spec Synchronization
-- Edited blocks surface back to semiformal code
-- Line-level granularity for precise updates
-
-## Usage Guide
-
-### Basic Workflow
-
-1. **Write Semiformal Code**
-   Write incomplete Python code in the left editor. You can use:
-   - Function calls without definitions
-   - Variables with natural language descriptions
-   - Incomplete assignments with `...`
-
-2. **Parse the Code**
-   Click "Parse" to analyze incomplete parts. The system will:
-   - Identify missing function declarations
-   - Detect undefined variables
-   - Highlight natural language expressions
-   - Insert stub declarations
-
-3. **Generate Complete Code**
-   Click "Generate Code" to use LLM to fill in the missing implementations.
-   The generated code appears in the right editor.
-
-4. **Edit and Sync**
-   - Edit the spec (left): Changes automatically sync to generated code
-   - Edit the code (right): Click "Sync to Spec" to update the spec
-
-### Example Usage
-
-#### Example 1: Function Without Declaration
-
+### Configuration-Driven
+All behavior is configurable via `MVPConfig`:
 ```python
-# Write this in the spec editor:
-result = calculate_average([1, 2, 3, 4, 5])
+- LLM model, temperature, max_tokens
+- Parser settings (NLP, tokenization)
+- Edit type categorization
+- Generator validation and retries
+```
+
+**No hardcoded assumptions** - works for any domain, not just data science/ML.
+
+### Node Mapping Visualization
+- **Cursor tracking**: See which node your cursor is on
+- **Highlighting**: Mapped nodes highlighted in blue
+- **Console logging**: Node → Python code mappings in dev console
+
+### Comprehensive Edit Support
+See `EDIT_MAPPING_TABLE.md` for all **71 semiformal→Python** and **17 Python→semiformal** edit types.
+
+## Examples
+
+### Example 1: Natural Language
+```python
+# Semiformal (left editor)
+data = load the dataset and clean it
+result = process(data)
+
+# Generated Python (right editor - after Cmd+S)
+data = None  # TODO: Fill this placeholder
+result = process(data)
+```
+
+### Example 2: Hole Syntax
+```python
+# Semiformal
+x = {calculate the mean of numbers}
+y = {}
+
+# With OpenAI API key configured:
+x = calculate_mean(numbers)
+y = None  # TODO: Fill this placeholder
+```
+
+### Example 3: Function Calls Without Definitions
+```python
+# Semiformal
+result = transform(clean(data))
+print(result)
+
+# Generated (with stubs)
+result = transform(clean(data))
 print(result)
 ```
 
-After parsing, a stub will be created:
-```python
-def calculate_average(arg0):
-    ...
+## Testing
 
-result = calculate_average([1, 2, 3, 4, 5])
-print(result)
+### Run MVP Tests
+```bash
+python test_mvp.py
+```
+Tests Phases 1-3 (6 tests total)
+
+### Run Edge Case Tests
+```bash
+python test_edge_cases.py
+```
+Comprehensive edge case coverage (31 tests):
+- Empty inputs, complex expressions
+- NL edge cases, error handling
+- Unicode/multi-byte characters
+- Large codebases (100 vars, 50 functions)
+
+All **37/37 tests passing** ✓
+
+## Architecture
+
+See `MVP_ARCHITECTURE.md` for complete specification including:
+- Intent node types and examples
+- Edit type categorization
+- Code generation strategies
+- Mapping maintenance
+- Example walkthrough
+
+## API Endpoints
+
+The MVP backend (`mvp_main.py`) provides:
+
+- `POST /initialize` - Parse semiformal code, generate initial Python
+- `POST /edit/semiformal` - Apply semiformal edits
+- `POST /edit/python` - Handle Python code edits
+- `POST /fill-hole` - Fill a hole using LLM
+- `POST /regenerate` - Regenerate code for a target
+- `GET /state` - Get current editor state
+- `GET /` - Health check + capabilities
+
+## Requirements
+
+- **Python 3.8+**
+- **Node.js 18+**
+- **OpenAI API key** (optional - LLM features disabled without it)
+
+## Environment Variables
+
+```bash
+OPENAI_API_KEY=your-key-here  # Required for LLM features
+PORT=8001                      # Optional, defaults to 8001
 ```
 
-After generation, you'll get complete code:
-```python
-def calculate_average(numbers):
-    return sum(numbers) / len(numbers)
+## Development
 
-result = calculate_average([1, 2, 3, 4, 5])
-print(result)
+### Backend Development
+```bash
+cd backend
+python mvp_main.py  # Starts on port 8001
 ```
 
-#### Example 2: Natural Language Variable
-
-```python
-# Write this in the spec editor:
-data = load and preprocess the dataset
-model = train_model(data)
+### Frontend Development
+```bash
+cd frontend
+npm run dev  # Starts on port 3000, proxies /api to port 8001
 ```
 
-After generation:
-```python
-data = load_and_preprocess_dataset()  # Generated function
-model = train_model(data)
+### Run All Tests
+```bash
+python test_mvp.py && python test_edge_cases.py
 ```
 
-#### Example 3: Bidirectional Edits
+## Troubleshooting
 
-If you add a parameter to a function in the spec:
-```python
-def process(data, normalize):  # Added 'normalize' parameter
-    ...
-```
+### Backend not reachable
+- Ensure `mvp_main.py` is running on port 8001
+- Check `vite.config.ts` proxy settings
 
-The system will:
-1. Update the function signature in generated code
-2. Trigger regeneration to use the new parameter
+### LLM features not working
+- Set `OPENAI_API_KEY` in `.env` file
+- Restart the backend after setting the key
 
-### Tips
+### Decorations not showing
+- Clear browser cache
+- Check browser console for errors
+- Ensure auto-parse completed (wait 1 second after typing)
 
-- Use descriptive natural language for better LLM generation
-- The system tracks dependencies for intelligent code placement
-- Function renames propagate automatically without LLM calls
-- Manual code edits can be surfaced back to specs for documentation
+## Contributing
+
+See `EDIT_MAPPING_TABLE.md` for edit type coverage and `MVP_ARCHITECTURE.md` for implementation details.
+
+All contributions should:
+- Maintain general-purpose implementation (no domain-specific assumptions)
+- Update tests for new features
+- Follow configuration-driven architecture
+- Document edit types in the mapping table
+
+## License
+
+MIT
