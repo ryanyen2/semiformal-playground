@@ -1,64 +1,253 @@
 /**
  * Main entry point for the semiformal programming playground.
+ *
+ * Features:
+ * - Auto-parse with 1-second debounce
+ * - Cmd/Ctrl+S to generate code
+ * - Bidirectional sync
+ * - Cursor-based node mapping visualization
  */
 
 import { EditorView } from '@codemirror/view'
-import { createEditor, getEditorContent, setEditorContent, detectChanges } from './editor'
-import { DecorationManager, createDecorationPlugin } from './decorations'
-import { SyncManager, analyzeSpecChange, analyzeCodeChange } from './sync'
+import { createEditor, getEditorContent } from './editor'
+import {
+  nodeDecorationsField,
+  nodesStateField,
+  cursorMappingStateField,
+  mappingsStateField,
+  updateNodeDecorations,
+  updateMappingDecorations,
+  updateCursorMapping,
+  findNodeAtCursor,
+  findMappingForNode
+} from './decorations'
+import { api, IntentNode, NodeMapping } from './api'
 
 // Initial example code
 const EXAMPLE_SPEC = `# Semiformal Python Example
-# Try writing incomplete code!
+# Type to parse automatically (debounced)
+# Press Cmd+S to generate Python code
 
-# Example 1: Function without declaration
-result = process_data(raw_input)
+# Example 1: Natural language
+result = load the dataset and process it
 
-# Example 2: Variable with natural language
-x = split dataset into training and test sets
+# Example 2: Function call
+output = transform(result)
 
-# Example 3: Function call with stub
-output = transform(x)
+# Example 3: Hole syntax
+x = {}
+y = {split data into train and test}
 
-def transform(data):
-    ...
-
-print(result, x, output)
+print(output)
 `
 
 // Application state
 let specEditor: EditorView
 let codeEditor: EditorView
-let specDecorationManager: DecorationManager
-let syncManager: SyncManager
+let parseTimeout: number | null = null
+let isGenerating = false
+let isParsing = false
 
-let lastSpecContent = EXAMPLE_SPEC
-let lastCodeContent = ''
+// Current state
+let currentNodes: IntentNode[] = []
+let currentMappings: NodeMapping[] = []
+let hasLLM = false
 
-// Status bar management
-function showStatus(message: string, type: 'info' | 'error' | 'success' = 'info') {
-  const statusBar = document.getElementById('status-bar')
-  if (!statusBar) return
-
-  statusBar.textContent = message
-  statusBar.className = `status-bar ${type}`
-  statusBar.style.display = 'block'
-
-  if (type !== 'error') {
-    setTimeout(() => {
-      statusBar.style.display = 'none'
-    }, 3000)
+/**
+ * UI status helpers
+ */
+function setSpecStatus(text: string, className: '' | 'parsing' | 'generating' = '') {
+  const dot = document.getElementById('spec-status-dot')
+  const status = document.getElementById('spec-status-text')
+  if (dot && status) {
+    dot.className = `status-dot ${className}`
+    status.textContent = text
   }
 }
 
-// Initialize application
-function init() {
+function setCodeStatus(text: string, className: '' | 'parsing' | 'generating' = '') {
+  const dot = document.getElementById('code-status-dot')
+  const status = document.getElementById('code-status-text')
+  if (dot && status) {
+    dot.className = `status-dot ${className}`
+    status.textContent = text
+  }
+}
+
+function setStatusMessage(message: string, type: '' | 'parsing' | 'generating' | 'error' | 'success' = '') {
+  const statusBar = document.getElementById('status-bar')
+  const statusMessage = document.getElementById('status-message')
+
+  if (statusBar && statusMessage) {
+    statusBar.className = `status-bar ${type}`
+    statusMessage.textContent = message
+  }
+}
+
+function setNodeCount(count: number) {
+  const nodeCount = document.getElementById('node-count')
+  if (nodeCount) {
+    nodeCount.textContent = `${count} node${count !== 1 ? 's' : ''}`
+  }
+}
+
+function setLLMStatus(available: boolean) {
+  const llmStatus = document.getElementById('llm-status')
+  if (llmStatus) {
+    llmStatus.textContent = available ? 'LLM: available' : 'LLM: not configured'
+    llmStatus.style.color = available ? '#4ec9b0' : '#858585'
+  }
+}
+
+/**
+ * Parse semiformal code (debounced)
+ */
+async function parseCode(semiformalCode: string) {
+  if (isParsing) return
+  isParsing = true
+
+  try {
+    setSpecStatus('Parsing...', 'parsing')
+    setStatusMessage('Parsing semiformal code...', 'parsing')
+
+    const result = await api.initialize(semiformalCode)
+
+    currentNodes = result.nodes
+    currentMappings = result.mappings
+
+    // Update decorations
+    updateNodeDecorations(specEditor, result.nodes)
+    updateMappingDecorations(specEditor, result.mappings)
+
+    // Update UI
+    setNodeCount(result.nodes.length)
+    setSpecStatus('Parsed', '')
+    setStatusMessage(result.message, 'success')
+
+    console.log('Parse result:', result)
+  } catch (error) {
+    console.error('Parse error:', error)
+    setSpecStatus('Parse error', '')
+    setStatusMessage(
+      `Parse error: ${error instanceof Error ? error.message : String(error)}`,
+      'error'
+    )
+  } finally {
+    isParsing = false
+  }
+}
+
+/**
+ * Generate Python code (Cmd+S)
+ */
+async function generateCode() {
+  if (isGenerating || isParsing) return
+  isGenerating = true
+
+  try {
+    const semiformalCode = getEditorContent(specEditor)
+
+    setCodeStatus('Generating...', 'generating')
+    setStatusMessage('Generating Python code...', 'generating')
+
+    const result = await api.initialize(semiformalCode)
+
+    // Update code editor
+    codeEditor.dispatch({
+      changes: {
+        from: 0,
+        to: codeEditor.state.doc.length,
+        insert: result.python_code
+      }
+    })
+
+    currentNodes = result.nodes
+    currentMappings = result.mappings
+
+    // Update decorations
+    updateNodeDecorations(specEditor, result.nodes)
+    updateMappingDecorations(specEditor, result.mappings)
+
+    // Update UI
+    setCodeStatus('Generated', '')
+    setStatusMessage(result.message, 'success')
+    setNodeCount(result.nodes.length)
+
+    console.log('Generation result:', result)
+  } catch (error) {
+    console.error('Generation error:', error)
+    setCodeStatus('Generation error', '')
+    setStatusMessage(
+      `Generation error: ${error instanceof Error ? error.message : String(error)}`,
+      'error'
+    )
+  } finally {
+    isGenerating = false
+  }
+}
+
+/**
+ * Handle cursor movement to highlight mapped nodes
+ */
+function handleCursorMove(view: EditorView) {
+  const cursorPos = view.state.selection.main.head
+  const line = view.state.doc.lineAt(cursorPos)
+  const lineNum = line.number
+  const colNum = cursorPos - line.from
+
+  // Find node at cursor
+  const nodeIndex = findNodeAtCursor(currentNodes, lineNum, colNum)
+
+  // Update cursor mapping
+  updateCursorMapping(view, nodeIndex)
+
+  // If there's a mapping, highlight the corresponding Python code
+  if (nodeIndex !== null) {
+    const mapping = findMappingForNode(currentMappings, nodeIndex)
+    if (mapping) {
+      console.log(`Cursor on node #${nodeIndex}:`, currentNodes[nodeIndex])
+      console.log(`Maps to Python line ${mapping.code_line}:`, mapping.code_snippet)
+    }
+  }
+}
+
+/**
+ * Handle spec editor changes with debouncing
+ */
+function handleSpecChange() {
+  // Clear existing timeout
+  if (parseTimeout !== null) {
+    clearTimeout(parseTimeout)
+  }
+
+  // Set new timeout for 1 second
+  parseTimeout = window.setTimeout(() => {
+    const semiformalCode = getEditorContent(specEditor)
+    parseCode(semiformalCode)
+  }, 1000)
+}
+
+/**
+ * Initialize application
+ */
+async function init() {
   console.log('Initializing Semiformal Programming Playground...')
 
-  // Initialize managers
-  specDecorationManager = new DecorationManager()
-  syncManager = new SyncManager()
-  syncManager.updateSpecCode(EXAMPLE_SPEC)
+  // Check backend health
+  try {
+    const health = await api.health()
+    console.log('Backend health:', health)
+    hasLLM = health.has_openai
+    setLLMStatus(health.has_openai)
+
+    if (!health.has_openai) {
+      setStatusMessage('Warning: OpenAI API key not configured. LLM features disabled.', 'error')
+    }
+  } catch (error) {
+    console.error('Backend not reachable:', error)
+    setStatusMessage('Error: Backend not reachable. Make sure the server is running.', 'error')
+    setLLMStatus(false)
+  }
 
   // Create spec editor
   const specContainer = document.getElementById('spec-editor')
@@ -70,7 +259,20 @@ function init() {
   specEditor = createEditor(
     specContainer,
     EXAMPLE_SPEC,
-    [createDecorationPlugin(specDecorationManager)],
+    [
+      nodeDecorationsField,
+      nodesStateField,
+      cursorMappingStateField,
+      mappingsStateField,
+      EditorView.updateListener.of((update) => {
+        if (update.docChanged) {
+          handleSpecChange()
+        }
+        if (update.selectionSet) {
+          handleCursorMove(update.view)
+        }
+      })
+    ],
     false
   )
 
@@ -83,185 +285,24 @@ function init() {
 
   codeEditor = createEditor(
     codeContainer,
-    '# Generated code will appear here',
+    '# Press Cmd+S in the left editor to generate Python code',
     [],
     false
   )
 
-  // Set up event listeners
-  setupEventListeners()
-
-  // Listen for changes in spec editor
-  specEditor.dom.addEventListener('blur', handleSpecChange)
-
-  // Listen for changes in code editor
-  codeEditor.dom.addEventListener('blur', handleCodeChange)
+  // Add Cmd+S / Ctrl+S handler
+  document.addEventListener('keydown', (e) => {
+    if ((e.metaKey || e.ctrlKey) && e.key === 's') {
+      e.preventDefault()
+      generateCode()
+    }
+  })
 
   console.log('Initialization complete!')
-  showStatus('Ready! Try editing the semiformal code and click "Generate Code"', 'success')
-}
+  setStatusMessage('Ready. Type to parse (auto-debounced) • Cmd+S to generate', 'success')
 
-// Set up button event listeners
-function setupEventListeners() {
-  const parseBtn = document.getElementById('parseBtn')
-  const generateBtn = document.getElementById('generateBtn')
-  const syncToSpecBtn = document.getElementById('syncToSpecBtn')
-
-  parseBtn?.addEventListener('click', handleParse)
-  generateBtn?.addEventListener('click', handleGenerate)
-  syncToSpecBtn?.addEventListener('click', handleSyncToSpec)
-}
-
-// Handle parse button click
-async function handleParse() {
-  try {
-    showStatus('Parsing...', 'info')
-    const specCode = getEditorContent(specEditor)
-    syncManager.updateSpecCode(specCode)
-
-    const result = await syncManager.parseSpec()
-
-    // Update decorations
-    specDecorationManager.updateIncompleteParts(result.incomplete_parts)
-    specDecorationManager.updateStubs(result.stubs)
-
-    // Show annotated code in the spec editor
-    setEditorContent(specEditor, result.annotated_code)
-    lastSpecContent = result.annotated_code
-    syncManager.updateSpecCode(result.annotated_code)
-
-    showStatus(
-      `Parsed: ${result.incomplete_parts.length} incomplete parts, ${result.stubs.length} stubs created`,
-      'success'
-    )
-  } catch (error) {
-    console.error('Parse error:', error)
-    showStatus(`Parse error: ${error instanceof Error ? error.message : String(error)}`, 'error')
-  }
-}
-
-// Handle generate button click
-async function handleGenerate() {
-  try {
-    showStatus('Generating code with LLM...', 'info')
-    const specCode = getEditorContent(specEditor)
-    syncManager.updateSpecCode(specCode)
-
-    const result = await syncManager.generateFromSpec()
-
-    // Update code editor
-    setEditorContent(codeEditor, result.code)
-    lastCodeContent = result.code
-
-    showStatus(result.message, 'success')
-  } catch (error) {
-    console.error('Generation error:', error)
-    showStatus(
-      `Generation error: ${error instanceof Error ? error.message : String(error)}`,
-      'error'
-    )
-  }
-}
-
-// Handle spec changes (automatic sync to code)
-async function handleSpecChange() {
-  const currentContent = getEditorContent(specEditor)
-
-  if (currentContent === lastSpecContent) {
-    return // No changes
-  }
-
-  const change = detectChanges(lastSpecContent, currentContent)
-  if (!change) {
-    return
-  }
-
-  try {
-    // Analyze the change
-    const action = analyzeSpecChange(lastSpecContent, currentContent, change)
-
-    if (action.type !== 'none') {
-      showStatus(`Syncing ${action.type}...`, 'info')
-
-      // Update sync manager state
-      syncManager.updateSpecCode(currentContent)
-      const currentCodeContent = getEditorContent(codeEditor)
-      syncManager.updateGeneratedCode(currentCodeContent)
-
-      // Perform sync
-      const updatedCode = await syncManager.syncSpecToCode(action)
-
-      // Update code editor
-      setEditorContent(codeEditor, updatedCode)
-      lastCodeContent = updatedCode
-
-      showStatus(`Synced ${action.type} to code`, 'success')
-    }
-
-    lastSpecContent = currentContent
-  } catch (error) {
-    console.error('Spec sync error:', error)
-    showStatus(
-      `Sync error: ${error instanceof Error ? error.message : String(error)}`,
-      'error'
-    )
-  }
-}
-
-// Handle code changes (manual sync back to spec via button)
-async function handleCodeChange() {
-  // Just track changes, don't auto-sync
-  lastCodeContent = getEditorContent(codeEditor)
-}
-
-// Handle sync to spec button click
-async function handleSyncToSpec() {
-  const currentCodeContent = getEditorContent(codeEditor)
-  const currentSpecContent = getEditorContent(specEditor)
-
-  const change = detectChanges(
-    syncManager.getState().generatedCode,
-    currentCodeContent
-  )
-
-  if (!change) {
-    showStatus('No changes to sync', 'info')
-    return
-  }
-
-  try {
-    showStatus('Syncing changes to spec...', 'info')
-
-    // Analyze the change
-    const action = analyzeCodeChange(
-      syncManager.getState().generatedCode,
-      currentCodeContent,
-      change
-    )
-
-    if (action.type !== 'none') {
-      // Update sync manager state
-      syncManager.updateSpecCode(currentSpecContent)
-      syncManager.updateGeneratedCode(currentCodeContent)
-
-      // Perform sync
-      const updatedSpec = await syncManager.syncCodeToSpec(action)
-
-      // Update spec editor
-      setEditorContent(specEditor, updatedSpec)
-      lastSpecContent = updatedSpec
-
-      showStatus('Synced code changes to spec', 'success')
-    } else {
-      showStatus('No significant changes to sync', 'info')
-    }
-  } catch (error) {
-    console.error('Code sync error:', error)
-    showStatus(
-      `Sync error: ${error instanceof Error ? error.message : String(error)}`,
-      'error'
-    )
-  }
+  // Initial parse
+  parseCode(EXAMPLE_SPEC)
 }
 
 // Start the application when DOM is ready
