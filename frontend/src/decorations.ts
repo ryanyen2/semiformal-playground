@@ -295,3 +295,121 @@ export function findMappingForNode(
 ): NodeMapping | null {
   return mappings.find(m => m.node_index === nodeIndex) || null
 }
+
+/**
+ * State effect to update highlighted Python line
+ */
+export const updatePythonLineEffect = StateEffect.define<number | null>()
+
+/**
+ * State field for storing highlighted Python line
+ */
+export const pythonLineStateField = StateField.define<number | null>({
+  create() {
+    return null
+  },
+  update(lineNum, tr) {
+    for (const effect of tr.effects) {
+      if (effect.is(updatePythonLineEffect)) {
+        return effect.value
+      }
+    }
+    return lineNum
+  }
+})
+
+/**
+ * Create line highlight decoration for Python code
+ */
+function createPythonLineHighlight(
+  view: EditorView,
+  lineNum: number | null
+): DecorationSet {
+  if (lineNum === null || lineNum < 1) {
+    return Decoration.none
+  }
+
+  const doc = view.state.doc
+  if (lineNum > doc.lines) {
+    return Decoration.none
+  }
+
+  const builder = new RangeSetBuilder<Decoration>()
+  const line = doc.line(lineNum)
+
+  // Add gutter marker
+  builder.add(
+    line.from,
+    line.from,
+    Decoration.widget({
+      widget: new PythonLineMarkerWidget(),
+      side: -1
+    })
+  )
+
+  // Add line highlight
+  builder.add(
+    line.from,
+    line.from,
+    Decoration.line({
+      class: 'cm-python-mapped-line'
+    })
+  )
+
+  return builder.finish()
+}
+
+/**
+ * Gutter marker for highlighted Python line
+ */
+class PythonLineMarkerWidget extends WidgetType {
+  toDOM() {
+    const span = document.createElement('span')
+    span.className = 'cm-python-line-marker'
+    span.style.cssText = `
+      position: absolute;
+      width: 3px;
+      height: 100%;
+      left: 0;
+      background: linear-gradient(to right, #528bff, transparent);
+    `
+    return span
+  }
+
+  eq(other: PythonLineMarkerWidget) {
+    return true
+  }
+}
+
+/**
+ * State field for Python line decorations
+ */
+export const pythonLineDecorationsField = StateField.define<DecorationSet>({
+  create() {
+    return Decoration.none
+  },
+  update(decorations, tr) {
+    decorations = decorations.map(tr.changes)
+
+    for (const effect of tr.effects) {
+      if (effect.is(updatePythonLineEffect)) {
+        decorations = createPythonLineHighlight(tr.state.doc as any, effect.value)
+      }
+    }
+
+    return decorations
+  },
+  provide: f => EditorView.decorations.from(f)
+})
+
+/**
+ * Update Python line highlight
+ */
+export function updatePythonLineHighlight(
+  view: EditorView,
+  lineNum: number | null
+) {
+  view.dispatch({
+    effects: updatePythonLineEffect.of(lineNum)
+  })
+}

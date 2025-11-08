@@ -15,9 +15,12 @@ import {
   nodesStateField,
   cursorMappingStateField,
   mappingsStateField,
+  pythonLineStateField,
+  pythonLineDecorationsField,
   updateNodeDecorations,
   updateMappingDecorations,
   updateCursorMapping,
+  updatePythonLineHighlight,
   findNodeAtCursor,
   findMappingForNode
 } from './decorations'
@@ -115,6 +118,15 @@ async function parseCode(semiformalCode: string) {
     currentNodes = result.nodes
     currentMappings = result.mappings
 
+    // Update Python code editor with generated code
+    codeEditor.dispatch({
+      changes: {
+        from: 0,
+        to: codeEditor.state.doc.length,
+        insert: result.python_code
+      }
+    })
+
     // Update decorations
     updateNodeDecorations(specEditor, result.nodes)
     updateMappingDecorations(specEditor, result.mappings)
@@ -122,6 +134,7 @@ async function parseCode(semiformalCode: string) {
     // Update UI
     setNodeCount(result.nodes.length)
     setSpecStatus('Parsed', '')
+    setCodeStatus('Generated', '')
     setStatusMessage(result.message, 'success')
 
     console.log('Parse result:', result)
@@ -207,7 +220,16 @@ function handleCursorMove(view: EditorView) {
     if (mapping) {
       console.log(`Cursor on node #${nodeIndex}:`, currentNodes[nodeIndex])
       console.log(`Maps to Python line ${mapping.code_line}:`, mapping.code_snippet)
+
+      // Highlight the Python line in the code editor
+      updatePythonLineHighlight(codeEditor, mapping.code_line)
+    } else {
+      // Clear Python line highlight if no mapping
+      updatePythonLineHighlight(codeEditor, null)
     }
+  } else {
+    // Clear Python line highlight if no node
+    updatePythonLineHighlight(codeEditor, null)
   }
 }
 
@@ -286,7 +308,10 @@ async function init() {
   codeEditor = createEditor(
     codeContainer,
     '# Press Cmd+S in the left editor to generate Python code',
-    [],
+    [
+      pythonLineStateField,
+      pythonLineDecorationsField
+    ],
     false
   )
 
