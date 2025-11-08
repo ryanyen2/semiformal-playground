@@ -11,6 +11,7 @@ from dataclasses import dataclass
 from typing import List, Optional, Tuple
 from mvp_edit import DirectEditOperations, EditResult
 from mvp_generator import CodeGenerator, Mapping
+from mvp_config import MVPConfig, DEFAULT_CONFIG
 
 
 @dataclass
@@ -31,17 +32,24 @@ class Edit:
 class EditTranslator:
     """Translate edits between semiformal and Python"""
 
-    def __init__(self, mappings: List[Mapping], generator: CodeGenerator):
+    def __init__(
+        self,
+        mappings: List[Mapping],
+        generator: CodeGenerator,
+        config: Optional[MVPConfig] = None
+    ):
         """
         Initialize translator.
 
         Args:
             mappings: Node→code mappings from generator
             generator: CodeGenerator instance for LLM operations
+            config: Configuration object (uses DEFAULT_CONFIG if None)
         """
         self.mappings = {m.node_id: m for m in mappings}
         self.generator = generator
         self.direct_ops = DirectEditOperations()
+        self.config = config or DEFAULT_CONFIG
 
     def semiformal_to_python(
         self,
@@ -90,20 +98,9 @@ class EditTranslator:
         Check if edit can be directly mapped to Python.
 
         Phase 1: Direct edits (36.6% from EDIT_MAPPING_TABLE.md)
+        Uses configuration instead of hardcoded list.
         """
-        direct_types = [
-            'identifier_rename',
-            'function_rename',
-            'parameter_rename',
-            'operator_change',
-            'literal_change',
-            'parameter_add',
-            'parameter_remove',
-            'parameter_reorder',
-            'statement_insert',
-            'statement_delete',
-        ]
-        return edit.type in direct_types
+        return edit.type in self.config.edit_types.direct_edit_types
 
     def _direct_translate(self, edit: Edit, python_code: str) -> EditResult:
         """
@@ -194,8 +191,12 @@ class EditTranslator:
             )
 
     def _is_hole_fill(self, edit: Edit) -> bool:
-        """Check if this is filling a hole"""
-        return edit.type in ('hole_fill', 'hole_add_hint')
+        """
+        Check if this is filling a hole.
+
+        Uses configuration instead of hardcoded list.
+        """
+        return edit.type in self.config.edit_types.hole_edit_types
 
     def _fill_hole_edit(
         self,
@@ -246,13 +247,9 @@ class EditTranslator:
         Check if edit needs placeholder.
 
         Phase 2: Placeholder support (18.3%)
+        Uses configuration instead of hardcoded list.
         """
-        placeholder_types = [
-            'identifier_add_lhs',  # Adding variable to LHS
-            'argument_add',  # Adding function argument with unknown value
-            'variable_incomplete',  # Variable with unknown value
-        ]
-        return edit.type in placeholder_types
+        return edit.type in self.config.edit_types.placeholder_edit_types
 
     def _add_placeholder(self, edit: Edit, python_code: str) -> EditResult:
         """
@@ -296,14 +293,9 @@ class EditTranslator:
         Check if edit needs LLM.
 
         Phase 3: LLM integration (21.1%)
+        Uses configuration instead of hardcoded list.
         """
-        llm_types = [
-            'nl_phrase_add',
-            'nl_phrase_modify',
-            'semantic_change',
-            'add_function_body',
-        ]
-        return edit.type in llm_types
+        return edit.type in self.config.edit_types.llm_edit_types
 
     def _llm_translate(
         self,
@@ -330,36 +322,30 @@ class EditTranslator:
 class UpdateDecider:
     """Decide if and how Python→Semiformal edits should propagate"""
 
-    def __init__(self):
-        self.transient_patterns = [
-            'constant_tweak',
-            'variable_rename_internal',
-            'code_refactoring',
-            'debug_print',
-            'optimize_expression',
-            'reorder_imports',
-        ]
+    def __init__(self, config: Optional[MVPConfig] = None):
+        """
+        Initialize update decider.
 
-        self.semantic_patterns = [
-            'add_function',
-            'change_function_logic',
-            'add_dependency',
-            'change_return_value',
-        ]
+        Args:
+            config: Configuration object (uses DEFAULT_CONFIG if None)
+        """
+        self.config = config or DEFAULT_CONFIG
 
     def should_propagate(self, edit: Edit) -> Tuple[bool, str]:
         """
         Decide if Python edit should propagate to semiformal.
 
+        Uses configuration patterns instead of hardcoded lists.
+
         Returns:
             (should_propagate, strategy)
         """
         # Check if it's a transient edit (don't propagate)
-        if any(pattern in edit.type for pattern in self.transient_patterns):
+        if any(pattern in edit.type for pattern in self.config.edit_types.transient_patterns):
             return False, 'none'
 
         # Check if it's a semantic change (must propagate)
-        if any(pattern in edit.type for pattern in self.semantic_patterns):
+        if any(pattern in edit.type for pattern in self.config.edit_types.semantic_patterns):
             return True, 'llm'
 
         # Default: optional (ask user or use heuristic)

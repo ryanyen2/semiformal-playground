@@ -14,6 +14,7 @@ import re
 from dataclasses import dataclass, field
 from typing import List, Tuple, Optional, Dict, Any
 from mvp_parser import IntentNode
+from mvp_config import MVPConfig, DEFAULT_CONFIG
 
 
 @dataclass
@@ -37,14 +38,21 @@ class Mapping:
 class CodeGenerator:
     """Generate Python code from intent nodes with OpenAI"""
 
-    def __init__(self, openai_api_key: Optional[str] = None):
+    def __init__(
+        self,
+        openai_api_key: Optional[str] = None,
+        config: Optional[MVPConfig] = None
+    ):
         """
         Initialize code generator.
 
         Args:
             openai_api_key: OpenAI API key (or use OPENAI_API_KEY env var)
+            config: Configuration object (uses DEFAULT_CONFIG if None)
         """
+        self.config = config or DEFAULT_CONFIG
         self.api_key = openai_api_key or os.getenv('OPENAI_API_KEY')
+
         if not self.api_key:
             print("Warning: OpenAI API key not provided. LLM features will be disabled.")
             self.client = None
@@ -54,6 +62,9 @@ class CodeGenerator:
                 self.client = OpenAI(api_key=self.api_key)
             except ImportError:
                 print("Warning: openai package not installed. Install with: pip install openai")
+                self.client = None
+            except Exception as e:
+                print(f"Warning: Failed to initialize OpenAI client: {e}")
                 self.client = None
 
     def generate_with_mapping(
@@ -141,6 +152,16 @@ class CodeGenerator:
             if node.type == 'python_stmt':
                 return node.content
 
+        # Check if any node has full_statement metadata (from parser)
+        for node in nodes:
+            if node.metadata.get('full_statement'):
+                return node.metadata['full_statement']
+
+        # Check if any node has full_code metadata (function defs)
+        for node in nodes:
+            if node.metadata.get('full_code'):
+                return node.metadata['full_code']
+
         # Otherwise, try to build from components
         # Group by role
         targets = [n for n in nodes if n.type == 'identifier' and n.metadata.get('role') == 'target']
@@ -155,11 +176,29 @@ class CodeGenerator:
 
             # Build RHS
             if funcs:
-                # Function call
-                func_name = funcs[0].content
-                # Get arguments
-                args = ', '.join(r.content for r in refs) if refs else ''
-                rhs = f"{func_name}({args})"
+                # Function call(s) - handle nested calls
+                # For now, just use first func and last ref as simple approximation
+                # Full implementation would need to properly reconstruct the call tree
+                if len(funcs) > 1:
+                    # Nested calls - build from innermost to outermost
+                    # Order: funcs are in order of appearance
+                    # refs are arguments
+                    if refs:
+                        # Start with innermost call
+                        inner = f"{funcs[-1].content}({refs[-1].content if refs else ''})"
+                        # Build outward
+                        for i in range(len(funcs) - 2, -1, -1):
+                            inner = f"{funcs[i].content}({inner})"
+                        rhs = inner
+                    else:
+                        # No args, just chain the calls
+                        rhs = funcs[0].content + '(' * len(funcs) + ')' * len(funcs)
+                else:
+                    # Single function call
+                    func_name = funcs[0].content
+                    # Get arguments
+                    args = ', '.join(r.content for r in refs) if refs else ''
+                    rhs = f"{func_name}({args})"
             elif operators:
                 # Expression with operators (e.g., 5 + 3, x * 2)
                 # Interleave literals/refs with operators
@@ -286,7 +325,7 @@ class CodeGenerator:
         all_nodes: List[IntentNode]
     ) -> Tuple[str, List[Mapping]]:
         """
-        Use OpenAI API to generate code.
+        Use OpenAI API to generate code with retry logic and validation.
 
         Phase 3: Hole filling with LLM
         """
@@ -295,35 +334,90 @@ class CodeGenerator:
         # Build prompt
         prompt = self._build_generation_prompt(target_names, intent, context, all_nodes)
 
-        try:
-            # Call OpenAI API
-            response = self.client.chat.completions.create(
-                model="gpt-4o-mini",  # Using mini for cost efficiency
-                messages=[
-                    {"role": "system", "content": "You are a Python code generator. Generate only valid Python code."},
-                    {"role": "user", "content": prompt}
-                ],
-                temperature=0.3,
-                max_tokens=500
-            )
+        # Retry logic
+        max_retries = self.config.generator.max_llm_retries
+        last_error = None
 
-            generated_code = response.choices[0].message.content.strip()
+        for attempt in range(max_retries):
+            try:
+                # Call OpenAI API with configured parameters
+                response = self.client.chat.completions.create(
+                    model=self.config.llm.model,
+                    messages=[
+                        {
+                            "role": "system",
+                            "content": "You are a Python code generator. Generate only valid, executable Python code."
+                        },
+                        {"role": "user", "content": prompt}
+                    ],
+                    temperature=self.config.llm.temperature,
+                    max_tokens=self.config.llm.max_tokens
+                )
 
-            # Extract code from markdown if present
-            generated_code = self._extract_code_block(generated_code)
+                generated_code = response.choices[0].message.content.strip()
 
-            # Parse node annotations if present
-            mappings = self._parse_node_annotations(generated_code, all_nodes, start_line)
+                if not generated_code:
+                    raise ValueError("LLM returned empty response")
 
-            # Clean up annotations from code
-            clean_code = re.sub(r'# \[NODE:.*?\]\n?', '', generated_code).strip()
+                # Extract code from markdown if present
+                generated_code = self._extract_code_block(generated_code)
 
-            return clean_code, mappings
+                # Validate generated code if configured
+                if self.config.generator.validate_generated_code:
+                    validation_error = self._validate_python_code(generated_code)
+                    if validation_error:
+                        raise ValueError(f"Generated code validation failed: {validation_error}")
 
-        except Exception as e:
-            print(f"LLM generation error: {str(e)}")
-            # Fallback to placeholder
+                # Parse node annotations if present
+                mappings = self._parse_node_annotations(generated_code, all_nodes, start_line)
+
+                # Clean up annotations from code
+                clean_code = re.sub(r'# \[NODE:.*?\]\n?', '', generated_code).strip()
+
+                # Final validation of clean code
+                if self.config.generator.validate_generated_code:
+                    validation_error = self._validate_python_code(clean_code)
+                    if validation_error and not self.config.generator.fallback_to_placeholder:
+                        raise ValueError(f"Clean code validation failed: {validation_error}")
+
+                return clean_code, mappings
+
+            except Exception as e:
+                last_error = e
+                if attempt < max_retries - 1:
+                    print(f"LLM generation attempt {attempt + 1} failed: {str(e)}. Retrying...")
+                    continue
+                else:
+                    print(f"LLM generation failed after {max_retries} attempts: {str(e)}")
+
+        # All retries failed - fallback to placeholder if configured
+        if self.config.generator.fallback_to_placeholder:
+            print(f"Falling back to placeholder due to LLM failure: {last_error}")
             return self._create_placeholder(identifiers), []
+        else:
+            # Re-raise the last error
+            raise last_error
+
+    def _validate_python_code(self, code: str) -> Optional[str]:
+        """
+        Validate that code is syntactically correct Python.
+
+        Args:
+            code: Code to validate
+
+        Returns:
+            Error message if invalid, None if valid
+        """
+        if not code or not code.strip():
+            return "Code is empty"
+
+        try:
+            ast.parse(code)
+            return None  # Valid
+        except SyntaxError as e:
+            return f"Syntax error: {e.msg} at line {e.lineno}"
+        except Exception as e:
+            return f"Validation error: {str(e)}"
 
     def _build_generation_prompt(
         self,
@@ -332,40 +426,137 @@ class CodeGenerator:
         context: str,
         nodes: List[IntentNode]
     ) -> str:
-        """Build the prompt for LLM generation"""
-        # Get node IDs for annotation
+        """
+        Build the prompt for LLM generation.
+
+        Creates a context-aware prompt without hardcoded assumptions
+        about libraries or implementation details.
+        """
+        # Get node IDs for annotation if configured
         node_ids = ','.join([n.id for n in nodes])
 
-        prompt = f"""Generate Python code for this intent.
+        # Analyze context to extract relevant information
+        context_info = self._analyze_context(context)
 
-Assignment targets: {target_names if target_names else 'none (expression)'}
-Intent: {intent}
+        # Build a general, context-aware prompt
+        prompt_parts = [
+            "Generate Python code for the following intent.",
+            "",
+            f"**Intent**: {intent}",
+            "",
+        ]
 
-Context (full semiformal code):
-```
-{context}
-```
+        # Add target information if available
+        if target_names:
+            prompt_parts.append(f"**Assignment target(s)**: {', '.join(target_names)}")
+        else:
+            prompt_parts.append("**Type**: Expression or statement (no assignment)")
 
-Requirements:
-1. Return ONLY valid Python code
-2. Use common libraries (pandas, numpy, sklearn) when appropriate
-"""
+        prompt_parts.append("")
+
+        # Add context information
+        prompt_parts.extend([
+            "**Context** (surrounding semiformal code):",
+            "```python",
+            context.strip(),
+            "```",
+            "",
+        ])
+
+        # Add extracted context insights
+        if context_info['imports']:
+            prompt_parts.append(f"**Available imports**: {', '.join(context_info['imports'])}")
+
+        if context_info['defined_vars']:
+            prompt_parts.append(f"**Defined variables**: {', '.join(context_info['defined_vars'])}")
+
+        if context_info['defined_funcs']:
+            prompt_parts.append(f"**Defined functions**: {', '.join(context_info['defined_funcs'])}")
+
+        if context_info['imports'] or context_info['defined_vars'] or context_info['defined_funcs']:
+            prompt_parts.append("")
+
+        # Add requirements
+        prompt_parts.extend([
+            "**Requirements**:",
+            "1. Generate ONLY valid, executable Python code",
+            "2. Use appropriate libraries when needed (infer from context)",
+            "3. Code should be concise and correct",
+        ])
 
         if target_names:
-            prompt += f"\n3. Code should assign to: {', '.join(target_names)}"
+            prompt_parts.append(f"4. Code must assign to: {', '.join(target_names)}")
 
-        prompt += f"""
-4. Start your response with a comment: # [NODE:{node_ids}]
+        # Add node annotation instruction if configured
+        if self.config.generator.include_node_annotations:
+            prompt_parts.extend([
+                "",
+                f"5. Start with this comment: # [NODE:{node_ids}]",
+                "",
+                "**Example format**:",
+                "```python",
+                f"# [NODE:{node_ids}]",
+                f"{target_names[0] if target_names else 'result'} = # your code here",
+                "```",
+            ])
 
-Example format:
-```python
-# [NODE:{node_ids}]
-{target_names[0] if target_names else 'result'} = your_generated_code_here
-```
+        prompt_parts.extend([
+            "",
+            "**Generate the Python code now**:",
+        ])
 
-Generate the code now:"""
+        return '\n'.join(prompt_parts)
 
-        return prompt
+    def _analyze_context(self, context: str) -> Dict[str, List[str]]:
+        """
+        Analyze context to extract useful information.
+
+        Returns:
+            Dict with keys: imports, defined_vars, defined_funcs
+        """
+        result = {
+            'imports': [],
+            'defined_vars': [],
+            'defined_funcs': [],
+        }
+
+        if not context or not context.strip():
+            return result
+
+        try:
+            # Try to parse as Python
+            tree = ast.parse(context)
+
+            for node in ast.walk(tree):
+                if isinstance(node, ast.Import):
+                    for alias in node.names:
+                        result['imports'].append(alias.name)
+                elif isinstance(node, ast.ImportFrom) and node.module:
+                    result['imports'].append(node.module)
+                elif isinstance(node, ast.FunctionDef):
+                    result['defined_funcs'].append(node.name)
+                elif isinstance(node, ast.Assign):
+                    for target in node.targets:
+                        if isinstance(target, ast.Name):
+                            result['defined_vars'].append(target.id)
+        except SyntaxError:
+            # Context contains non-Python (semiformal), extract what we can with regex
+            import_matches = re.findall(r'^\s*import\s+(\w+)', context, re.MULTILINE)
+            from_matches = re.findall(r'^\s*from\s+(\w+)', context, re.MULTILINE)
+            result['imports'].extend(import_matches + from_matches)
+
+            func_matches = re.findall(r'^\s*def\s+(\w+)', context, re.MULTILINE)
+            result['defined_funcs'].extend(func_matches)
+
+            var_matches = re.findall(r'^\s*(\w+)\s*=', context, re.MULTILINE)
+            result['defined_vars'].extend(var_matches)
+
+        # Remove duplicates
+        result['imports'] = list(set(result['imports']))
+        result['defined_vars'] = list(set(result['defined_vars']))
+        result['defined_funcs'] = list(set(result['defined_funcs']))
+
+        return result
 
     def _extract_code_block(self, response: str) -> str:
         """Extract code from markdown code block"""

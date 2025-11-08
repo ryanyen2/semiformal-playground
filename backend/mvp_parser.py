@@ -78,10 +78,16 @@ class SemiformalParser:
 
     def _parse_python_statement_node(self, stmt: ast.AST, line_num: int):
         """Parse a Python AST statement node"""
+        # Store the full statement code for later reconstruction
+        full_code = ast.unparse(stmt)
+
         if isinstance(stmt, ast.Assign):
             self._parse_assignment(stmt, line_num)
         elif isinstance(stmt, ast.Expr):
-            self._parse_expression(stmt.value, line_num)
+            # Expression statement - store full code and parse
+            expr_node = self._parse_expression(stmt.value, line_num)
+            if expr_node and not expr_node.metadata.get('full_statement'):
+                expr_node.metadata['full_statement'] = full_code
         elif isinstance(stmt, ast.FunctionDef):
             self._parse_function_def(stmt, line_num)
         elif isinstance(stmt, ast.Import) or isinstance(stmt, ast.ImportFrom):
@@ -90,7 +96,7 @@ class SemiformalParser:
             # Generic statement - use ast.unparse
             self._create_node(
                 node_type='python_stmt',
-                content=ast.unparse(stmt),
+                content=full_code,
                 line_num=line_num
             )
 
@@ -119,6 +125,9 @@ class SemiformalParser:
 
     def _parse_assignment(self, stmt: ast.Assign, line_num: int):
         """Parse assignment statement: x = value"""
+        # For complete Python statements, store the full unparsed version
+        full_code = ast.unparse(stmt)
+
         # Parse targets (LHS)
         for target in stmt.targets:
             if isinstance(target, ast.Name):
@@ -126,7 +135,11 @@ class SemiformalParser:
                     node_type='identifier',
                     content=target.id,
                     line_num=line_num,
-                    metadata={'role': 'target', 'is_definition': True}
+                    metadata={
+                        'role': 'target',
+                        'is_definition': True,
+                        'full_statement': full_code  # Store full statement
+                    }
                 )
                 self.defined_vars.add(target.id)
             elif isinstance(target, ast.Tuple):
@@ -137,7 +150,11 @@ class SemiformalParser:
                             node_type='identifier',
                             content=elt.id,
                             line_num=line_num,
-                            metadata={'role': 'target', 'is_definition': True}
+                            metadata={
+                                'role': 'target',
+                                'is_definition': True,
+                                'full_statement': full_code  # Store full statement
+                            }
                         )
                         self.defined_vars.add(elt.id)
 
@@ -314,42 +331,76 @@ class SemiformalParser:
         """
         Segment NL phrase into semantic units.
 
-        Example: "split dataset into training and test sets"
-        Returns: ["split", "dataset", "training and test sets"]
-        """
-        # Common keywords in data science/ML domain
-        keywords = [
-            'split', 'load', 'transform', 'train', 'test', 'predict',
-            'dataset', 'model', 'data', 'into', 'from', 'using',
-            'preprocess', 'clean', 'normalize', 'validate',
-            'read', 'write', 'save', 'process'
-        ]
+        Uses a general approach without hardcoded keywords:
+        1. Split on common prepositions and conjunctions
+        2. Group remaining words into meaningful chunks
 
+        Example: "split dataset into training and test sets"
+        Returns: ["split dataset", "into", "training", "and", "test sets"]
+        """
+        if not phrase or not phrase.strip():
+            return []
+
+        # General linguistic markers (not domain-specific)
+        markers = {
+            'prepositions': ['into', 'from', 'to', 'with', 'by', 'for', 'using', 'via'],
+            'conjunctions': ['and', 'or', 'but', 'then'],
+            'articles': ['the', 'a', 'an'],
+        }
+
+        all_markers = set()
+        for category in markers.values():
+            all_markers.update(category)
+
+        # Tokenize by markers while keeping them
         tokens = []
         words = phrase.split()
 
-        i = 0
-        while i < len(words):
-            word = words[i].lower()
-            if word in keywords:
-                # Start a new chunk
-                chunk = words[i]
-                j = i + 1
-                # Collect following words until next keyword
-                while j < len(words) and words[j].lower() not in keywords:
-                    chunk += " " + words[j]
-                    j += 1
-                tokens.append(chunk)
-                i = j
+        if not words:
+            return [phrase]
+
+        current_chunk = []
+
+        for word in words:
+            word_lower = word.lower()
+
+            if word_lower in all_markers:
+                # Save current chunk if exists
+                if current_chunk:
+                    tokens.append(' '.join(current_chunk))
+                    current_chunk = []
+
+                # Add marker as separate token (unless it's an article)
+                if word_lower not in markers['articles']:
+                    tokens.append(word)
             else:
-                # Skip non-keyword words or collect them
-                i += 1
+                current_chunk.append(word)
 
-        # If no keywords found, treat whole phrase as one token
-        if not tokens:
-            tokens = [phrase]
+        # Add remaining chunk
+        if current_chunk:
+            tokens.append(' '.join(current_chunk))
 
-        return tokens
+        # If no segmentation happened, return whole phrase
+        if not tokens or (len(tokens) == 1 and tokens[0] == phrase):
+            # Try splitting on common patterns
+            # Pattern: "verb object prep object" -> ["verb object", "prep object"]
+            if len(words) >= 3:
+                # Simple heuristic: split roughly in middle on markers
+                mid = len(words) // 2
+                for i in range(mid - 1, min(mid + 2, len(words))):
+                    if i < len(words) and words[i].lower() in all_markers:
+                        tokens = [
+                            ' '.join(words[:i]),
+                            ' '.join(words[i:])
+                        ]
+                        break
+
+            # Final fallback: return whole phrase
+            if not tokens or len(tokens) == 1:
+                return [phrase]
+
+        # Filter out empty tokens
+        return [t for t in tokens if t.strip()]
 
     def _get_operator_symbol(self, op: ast.operator) -> str:
         """Get string representation of operator"""

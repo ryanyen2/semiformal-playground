@@ -13,6 +13,7 @@ from mvp_parser import SemiformalParser, IntentNode, parse_semiformal
 from mvp_generator import CodeGenerator, Mapping
 from mvp_translator import EditTranslator, Edit, UpdateDecider
 from mvp_edit import EditResult
+from mvp_config import MVPConfig, DEFAULT_CONFIG
 
 
 class BidirectionalEditor:
@@ -25,17 +26,23 @@ class BidirectionalEditor:
     - Phase 3: Hole syntax and LLM generation
     """
 
-    def __init__(self, openai_api_key: Optional[str] = None):
+    def __init__(
+        self,
+        openai_api_key: Optional[str] = None,
+        config: Optional[MVPConfig] = None
+    ):
         """
         Initialize the bidirectional editor.
 
         Args:
             openai_api_key: OpenAI API key for LLM features
+            config: Configuration object (uses DEFAULT_CONFIG if None)
         """
+        self.config = config or DEFAULT_CONFIG
         self.parser = SemiformalParser()
-        self.generator = CodeGenerator(openai_api_key)
+        self.generator = CodeGenerator(openai_api_key, self.config)
         self.translator: Optional[EditTranslator] = None
-        self.update_decider = UpdateDecider()
+        self.update_decider = UpdateDecider(self.config)
 
         # State
         self.semiformal_code = ""
@@ -71,7 +78,7 @@ class BidirectionalEditor:
         )
 
         # Step 3: Set up translator
-        self.translator = EditTranslator(self.mappings, self.generator)
+        self.translator = EditTranslator(self.mappings, self.generator, self.config)
 
         return {
             'python_code': self.python_code,
