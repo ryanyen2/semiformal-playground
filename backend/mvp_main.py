@@ -12,6 +12,8 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from typing import List, Optional, Dict, Any
 import os
+from dotenv import load_dotenv
+load_dotenv()
 
 from mvp_editor import BidirectionalEditor
 from mvp_translator import Edit

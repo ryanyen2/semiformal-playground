@@ -109,6 +109,9 @@ class CodeGenerator:
                 )
                 generated_lines.append(code)
                 mappings.extend(line_mappings)
+                # Count actual lines generated
+                actual_lines = code.count('\n')
+                current_line += actual_lines
             elif has_python:
                 # Direct reconstruction
                 code = self._reconstruct_python(line_nodes)
@@ -139,7 +142,12 @@ class CodeGenerator:
 
             current_line += 1
 
-        return '\n'.join(generated_lines), mappings
+        final_code = '\n'.join(generated_lines)
+        
+        # Rebuild mappings from the final generated code to get accurate line/col info
+        mappings = self._rebuild_mappings_from_ast(final_code, nodes)
+        
+        return final_code, mappings
 
     def _reconstruct_python(self, nodes: List[IntentNode]) -> str:
         """
@@ -622,6 +630,212 @@ class CodeGenerator:
                             ))
 
         return mappings
+
+    def _rebuild_mappings_from_ast(
+        self,
+        generated_code: str,
+        nodes: List[IntentNode]
+    ) -> List[Mapping]:
+        """
+        Rebuild mappings from the final generated Python code using AST.
+        
+        This provides accurate line/column information for all nodes by:
+        1. Parsing the generated Python code into an AST
+        2. Matching each intent node to corresponding AST node(s)
+        3. Extracting precise location information
+        
+        Args:
+            generated_code: The final generated Python code
+            nodes: The intent nodes from parsing
+            
+        Returns:
+            List of accurate Mapping objects
+        """
+        mappings = []
+        
+        try:
+            # Parse the generated code
+            tree = ast.parse(generated_code)
+        except SyntaxError as e:
+            # If generated code has syntax errors, return empty mappings
+            print(f"Warning: Generated code has syntax errors: {e}")
+            return []
+        
+        # Build a mapping from node content to node for quick lookup
+        nodes_by_content: Dict[str, List[IntentNode]] = {}
+        for node in nodes:
+            content = node.content
+            if content not in nodes_by_content:
+                nodes_by_content[content] = []
+            nodes_by_content[content].append(node)
+        
+        # Track which nodes have been mapped to avoid duplicates
+        mapped_nodes = set()
+        
+        # Walk through the AST and create mappings
+        for ast_node in ast.walk(tree):
+            # Match identifiers (variable names)
+            if isinstance(ast_node, ast.Name):
+                var_name = ast_node.id
+                if var_name in nodes_by_content:
+                    for intent_node in nodes_by_content[var_name]:
+                        if intent_node.id not in mapped_nodes:
+                            # Determine role based on context
+                            is_store = isinstance(ast_node.ctx, ast.Store)
+                            expected_role = 'target' if is_store else 'reference'
+                            
+                            # Match role if specified
+                            node_role = intent_node.metadata.get('role')
+                            if node_role and node_role != expected_role:
+                                continue
+                            
+                            mappings.append(Mapping(
+                                node_id=intent_node.id,
+                                slices=[CodeSlice(
+                                    code=self._extract_code_at_location(
+                                        generated_code, ast_node.lineno, ast_node.col_offset
+                                    ),
+                                    line_start=ast_node.lineno,
+                                    line_end=ast_node.lineno,
+                                    ast_nodes=[ast_node]
+                                )],
+                                confidence=1.0,
+                                generation_method='ast_matched'
+                            ))
+                            mapped_nodes.add(intent_node.id)
+                            break
+            
+            # Match function calls
+            elif isinstance(ast_node, ast.Call):
+                if isinstance(ast_node.func, ast.Name):
+                    func_name = ast_node.func.id
+                    if func_name in nodes_by_content:
+                        for intent_node in nodes_by_content[func_name]:
+                            if intent_node.type == 'function_call' and intent_node.id not in mapped_nodes:
+                                # Get the full statement containing this call
+                                statement_line = self._get_statement_for_node(tree, ast_node)
+                                
+                                mappings.append(Mapping(
+                                    node_id=intent_node.id,
+                                    slices=[CodeSlice(
+                                        code=statement_line,
+                                        line_start=ast_node.lineno,
+                                        line_end=ast_node.end_lineno or ast_node.lineno,
+                                        ast_nodes=[ast_node]
+                                    )],
+                                    confidence=1.0,
+                                    generation_method='ast_matched'
+                                ))
+                                mapped_nodes.add(intent_node.id)
+                                break
+            
+            # Match function definitions
+            elif isinstance(ast_node, ast.FunctionDef):
+                func_name = ast_node.name
+                if func_name in nodes_by_content:
+                    for intent_node in nodes_by_content[func_name]:
+                        if intent_node.type == 'function_def' and intent_node.id not in mapped_nodes:
+                            # Get the full function code
+                            func_code = ast.unparse(ast_node)
+                            
+                            mappings.append(Mapping(
+                                node_id=intent_node.id,
+                                slices=[CodeSlice(
+                                    code=func_code,
+                                    line_start=ast_node.lineno,
+                                    line_end=ast_node.end_lineno or ast_node.lineno,
+                                    ast_nodes=[ast_node]
+                                )],
+                                confidence=1.0,
+                                generation_method='ast_matched'
+                            ))
+                            mapped_nodes.add(intent_node.id)
+                            break
+            
+            # Match imports
+            elif isinstance(ast_node, (ast.Import, ast.ImportFrom)):
+                for alias in ast_node.names:
+                    if alias.name in nodes_by_content:
+                        for intent_node in nodes_by_content[alias.name]:
+                            if intent_node.type in ('import', 'import_from') and intent_node.id not in mapped_nodes:
+                                import_line = self._extract_code_at_location(
+                                    generated_code, ast_node.lineno, 0
+                                )
+                                
+                                mappings.append(Mapping(
+                                    node_id=intent_node.id,
+                                    slices=[CodeSlice(
+                                        code=import_line,
+                                        line_start=ast_node.lineno,
+                                        line_end=ast_node.lineno,
+                                        ast_nodes=[ast_node]
+                                    )],
+                                    confidence=1.0,
+                                    generation_method='ast_matched'
+                                ))
+                                mapped_nodes.add(intent_node.id)
+                                break
+        
+        # For nodes that couldn't be matched (e.g., NL phrases, holes that got transformed),
+        # create approximate mappings based on the original semiformal line
+        for node in nodes:
+            if node.id not in mapped_nodes:
+                # Try to find related code based on semicformal line position
+                # For now, use a heuristic: map to the generated code near the same relative position
+                
+                # Get the semiformal line number (0-based)
+                sf_line = node.span[0]
+                
+                # Estimate corresponding Python line (rough approximation)
+                # This is imperfect but better than nothing for unmapped nodes
+                code_lines = generated_code.split('\n')
+                estimated_line = min(sf_line + 1, len(code_lines))
+                
+                # Try to find a meaningful line (skip comments and empty lines)
+                while estimated_line <= len(code_lines):
+                    if estimated_line > 0 and estimated_line <= len(code_lines):
+                        line_content = code_lines[estimated_line - 1].strip()
+                        if line_content and not line_content.startswith('#'):
+                            break
+                    estimated_line += 1
+                
+                if estimated_line <= len(code_lines):
+                    mappings.append(Mapping(
+                        node_id=node.id,
+                        slices=[CodeSlice(
+                            code=code_lines[estimated_line - 1] if estimated_line > 0 else "",
+                            line_start=estimated_line,
+                            line_end=estimated_line,
+                            ast_nodes=[]
+                        )],
+                        confidence=0.5,  # Low confidence for unmapped nodes
+                        generation_method='heuristic'
+                    ))
+        
+        return mappings
+    
+    def _extract_code_at_location(self, code: str, line: int, col: int) -> str:
+        """Extract the code snippet at a specific line and column."""
+        lines = code.split('\n')
+        if 1 <= line <= len(lines):
+            return lines[line - 1].strip()
+        return ""
+    
+    def _get_statement_for_node(self, tree: ast.AST, target_node: ast.AST) -> str:
+        """Get the full statement containing a specific AST node."""
+        # Find the statement that contains this node
+        for stmt in ast.walk(tree):
+            if isinstance(stmt, ast.stmt):
+                # Check if target_node is part of this statement
+                for node in ast.walk(stmt):
+                    if node is target_node:
+                        return ast.unparse(stmt)
+        
+        # Fallback: try to unparse the node itself
+        try:
+            return ast.unparse(target_node)
+        except:
+            return ""
 
     def fill_hole(
         self,

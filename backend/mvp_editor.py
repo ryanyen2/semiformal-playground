@@ -266,7 +266,7 @@ class BidirectionalEditor:
         )
 
         # Update translator
-        self.translator = EditTranslator(self.mappings, self.generator)
+        self.translator = EditTranslator(self.mappings, self.generator, self.config)
 
         return {
             'success': True,
@@ -311,29 +311,65 @@ class BidirectionalEditor:
 
     def _node_to_dict(self, node: IntentNode) -> Dict[str, Any]:
         """Convert IntentNode to dict for JSON serialization"""
+        # Extract line number from span
+        line = node.span[0] + 1  # Convert to 1-based line number
+        
+        # Extract column by finding where content appears in the line
+        col = 0
+        if self.semiformal_code:
+            lines = self.semiformal_code.split('\n')
+            if line - 1 < len(lines):
+                line_text = lines[line - 1]
+                # Find the position of the content in the line
+                content_pos = line_text.find(node.content)
+                if content_pos >= 0:
+                    col = content_pos
+                else:
+                    # If content not found, try to find similar content
+                    # For now, default to 0
+                    col = 0
+        
         return {
-            'id': node.id,
             'type': node.type,
-            'content': node.content,
-            'span': node.span,
-            'dependencies': node.dependencies,
+            'value': node.content,
+            'line': line,
+            'col': col,
             'metadata': node.metadata
         }
 
     def _mapping_to_dict(self, mapping: Mapping) -> Dict[str, Any]:
         """Convert Mapping to dict for JSON serialization"""
+        # Find node index from node_id
+        node_index = -1
+        for i, node in enumerate(self.intent_nodes):
+            if node.id == mapping.node_id:
+                node_index = i
+                break
+        
+        # Extract code information from first slice
+        code_line = 0
+        code_col = 0
+        code_snippet = ""
+        if mapping.slices:
+            first_slice = mapping.slices[0]
+            code_line = first_slice.line_start  # Already 1-based from AST
+            code_snippet = first_slice.code
+            
+            # Try to get column from AST nodes if available
+            if first_slice.ast_nodes:
+                ast_node = first_slice.ast_nodes[0]
+                if hasattr(ast_node, 'col_offset'):
+                    code_col = ast_node.col_offset
+                else:
+                    code_col = 0
+            else:
+                code_col = 0
+        
         return {
-            'node_id': mapping.node_id,
-            'slices': [
-                {
-                    'code': s.code,
-                    'line_start': s.line_start,
-                    'line_end': s.line_end
-                }
-                for s in mapping.slices
-            ],
-            'confidence': mapping.confidence,
-            'generation_method': mapping.generation_method
+            'node_index': node_index,
+            'code_line': code_line,
+            'code_col': code_col,
+            'code_snippet': code_snippet
         }
 
 

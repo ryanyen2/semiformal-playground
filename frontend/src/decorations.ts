@@ -17,12 +17,11 @@ export const updateCursorMappingEffect = StateEffect.define<number | null>() // 
  * Create decorations based on intent nodes
  */
 function createNodeDecorations(
-  view: EditorView,
+  doc: { lines: number; line: (n: number) => { from: number; to: number; text: string } },
   nodes: IntentNode[],
   cursorNodeIndex: number | null
 ): DecorationSet {
   const builder = new RangeSetBuilder<Decoration>()
-  const doc = view.state.doc
 
   for (let i = 0; i < nodes.length; i++) {
     const node = nodes[i]
@@ -110,11 +109,10 @@ class MappingMarkerWidget extends WidgetType {
  * Create gutter decorations for mapped lines
  */
 function createMappingGutterDecorations(
-  view: EditorView,
+  doc: { lines: number; line: (n: number) => { from: number; to: number } },
   mappings: NodeMapping[]
 ): DecorationSet {
   const builder = new RangeSetBuilder<Decoration>()
-  const doc = view.state.doc
 
   for (const mapping of mappings) {
     const lineNum = mapping.code_line
@@ -157,7 +155,7 @@ export const nodeDecorationsField = StateField.define<DecorationSet>({
           ? effect.value
           : tr.state.field(cursorMappingStateField)
 
-        decorations = createNodeDecorations(tr.state.doc as any, nodes, cursorMapping)
+        decorations = createNodeDecorations(tr.state.doc, nodes, cursorMapping)
       }
     }
 
@@ -297,47 +295,67 @@ export function findMappingForNode(
 }
 
 /**
- * State effect to update highlighted Python line
+ * Token highlight information
  */
-export const updatePythonLineEffect = StateEffect.define<number | null>()
+export interface PythonTokenHighlight {
+  line: number
+  col: number
+  length: number
+}
 
 /**
- * State field for storing highlighted Python line
+ * State effect to update highlighted Python token
  */
-export const pythonLineStateField = StateField.define<number | null>({
+export const updatePythonLineEffect = StateEffect.define<PythonTokenHighlight | null>()
+
+/**
+ * State field for storing highlighted Python token
+ */
+export const pythonLineStateField = StateField.define<PythonTokenHighlight | null>({
   create() {
     return null
   },
-  update(lineNum, tr) {
+  update(highlight, tr) {
     for (const effect of tr.effects) {
       if (effect.is(updatePythonLineEffect)) {
         return effect.value
       }
     }
-    return lineNum
+    return highlight
   }
 })
 
 /**
- * Create line highlight decoration for Python code
+ * Create token highlight decoration for Python code
  */
 function createPythonLineHighlight(
-  view: EditorView,
-  lineNum: number | null
+  doc: { lines: number; line: (n: number) => { from: number; to: number; text: string } },
+  highlight: PythonTokenHighlight | null
 ): DecorationSet {
-  if (lineNum === null || lineNum < 1) {
+  if (highlight === null || highlight.line < 1) {
     return Decoration.none
   }
 
-  const doc = view.state.doc
-  if (lineNum > doc.lines) {
+  if (highlight.line > doc.lines) {
     return Decoration.none
   }
 
   const builder = new RangeSetBuilder<Decoration>()
-  const line = doc.line(lineNum)
+  const line = doc.line(highlight.line)
 
-  // Add gutter marker
+  // Calculate token position
+  const tokenStart = line.from + highlight.col
+  const tokenEnd = Math.min(tokenStart + highlight.length, line.to)
+
+  // Validate positions
+  if (tokenStart < line.from || tokenStart > line.to || tokenEnd < tokenStart) {
+    return Decoration.none
+  }
+
+  // Decorations must be added in sorted order by 'from' position, then by 'side' (for widgets)
+  // Order: widget (side: -1) < marks (no side, treated as 0)
+  
+  // 1. Add gutter marker first (widget with side: -1, comes before all marks)
   builder.add(
     line.from,
     line.from,
@@ -347,14 +365,41 @@ function createPythonLineHighlight(
     })
   )
 
-  // Add line highlight
-  builder.add(
-    line.from,
-    line.from,
-    Decoration.line({
-      class: 'cm-python-mapped-line'
-    })
-  )
+  // 2. Add decorations in order: when marks start at same position, add shorter one first
+  // This ensures proper ordering for CodeMirror's RangeSetBuilder
+  if (tokenStart === line.from) {
+    // Token starts at line start - add token first (shorter), then line background (longer)
+    builder.add(
+      tokenStart,
+      tokenEnd,
+      Decoration.mark({
+        class: 'cm-python-mapped-token'
+      })
+    )
+    builder.add(
+      line.from,
+      line.to,
+      Decoration.mark({
+        class: 'cm-python-mapped-line-bg'
+      })
+    )
+  } else {
+    // Token starts after line start - add line background first, then token
+    builder.add(
+      line.from,
+      line.to,
+      Decoration.mark({
+        class: 'cm-python-mapped-line-bg'
+      })
+    )
+    builder.add(
+      tokenStart,
+      tokenEnd,
+      Decoration.mark({
+        class: 'cm-python-mapped-token'
+      })
+    )
+  }
 
   return builder.finish()
 }
@@ -393,7 +438,7 @@ export const pythonLineDecorationsField = StateField.define<DecorationSet>({
 
     for (const effect of tr.effects) {
       if (effect.is(updatePythonLineEffect)) {
-        decorations = createPythonLineHighlight(tr.state.doc as any, effect.value)
+        decorations = createPythonLineHighlight(tr.state.doc, effect.value)
       }
     }
 
@@ -403,13 +448,14 @@ export const pythonLineDecorationsField = StateField.define<DecorationSet>({
 })
 
 /**
- * Update Python line highlight
+ * Update Python token highlight
  */
 export function updatePythonLineHighlight(
   view: EditorView,
-  lineNum: number | null
+  highlight: PythonTokenHighlight | null
 ) {
+  // The effect will be handled by the state field's update method
   view.dispatch({
-    effects: updatePythonLineEffect.of(lineNum)
+    effects: updatePythonLineEffect.of(highlight)
   })
 }

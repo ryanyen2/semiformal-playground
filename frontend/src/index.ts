@@ -200,6 +200,60 @@ async function generateCode() {
 }
 
 /**
+ * Calculate the length of the token to highlight based on node and mapping
+ */
+function calculateTokenLength(node: IntentNode, mapping: NodeMapping): number {
+  // For identifiers and function calls, use the node value length
+  if (node.type === 'identifier' || node.type === 'function_call') {
+    return node.value.length
+  }
+
+  // For operators, use the node value length
+  if (node.type === 'operator') {
+    return node.value.length
+  }
+
+  // For literals, try to find the actual representation in the snippet
+  if (node.type === 'literal') {
+    // The snippet might have quotes around strings, so try to find the actual token
+    const snippet = mapping.code_snippet
+    const col = mapping.code_col
+    
+    // Extract the token starting at the column position
+    if (snippet && col >= 0) {
+      // Get the line from the snippet (in case it's multi-line)
+      const lines = snippet.split('\n')
+      if (lines.length > 0) {
+        const firstLine = lines[0]
+        // Try to extract a token starting at col
+        const remaining = firstLine.substring(col)
+        const tokenMatch = remaining.match(/^(\w+|'[^']*'|"[^"]*"|\d+\.?\d*|[^\s\w]+)/)
+        if (tokenMatch) {
+          return tokenMatch[1].length
+        }
+      }
+    }
+    return node.value.length
+  }
+
+  // For NL phrases and holes, highlight a reasonable portion of the generated code
+  // Use the snippet to determine length
+  const snippet = mapping.code_snippet
+  if (snippet) {
+    // For single-line snippets, use the whole snippet length
+    const lines = snippet.split('\n')
+    if (lines.length === 1) {
+      return Math.min(snippet.length, 80) // Cap at 80 chars for readability
+    }
+    // For multi-line, highlight the first line
+    return Math.min(lines[0].length - mapping.code_col, 80)
+  }
+
+  // Default fallback
+  return Math.max(node.value.length, 5)
+}
+
+/**
  * Handle cursor movement to highlight mapped nodes
  */
 function handleCursorMove(view: EditorView) {
@@ -218,11 +272,20 @@ function handleCursorMove(view: EditorView) {
   if (nodeIndex !== null) {
     const mapping = findMappingForNode(currentMappings, nodeIndex)
     if (mapping) {
-      console.log(`Cursor on node #${nodeIndex}:`, currentNodes[nodeIndex])
-      console.log(`Maps to Python line ${mapping.code_line}:`, mapping.code_snippet)
+      const node = currentNodes[nodeIndex]
+      console.log(`Cursor on node #${nodeIndex}:`, node)
+      console.log(`Maps to Python line ${mapping.code_line}, col ${mapping.code_col}:`, mapping.code_snippet)
 
-      // Highlight the Python line in the code editor
-      updatePythonLineHighlight(codeEditor, mapping.code_line)
+      // Calculate token length from node value or snippet
+      // Try to extract the actual token from the snippet
+      const tokenLength = calculateTokenLength(node, mapping)
+
+      // Highlight the Python token in the code editor
+      updatePythonLineHighlight(codeEditor, {
+        line: mapping.code_line,
+        col: mapping.code_col,
+        length: tokenLength
+      })
     } else {
       // Clear Python line highlight if no mapping
       updatePythonLineHighlight(codeEditor, null)
