@@ -241,6 +241,325 @@ class DirectEditOperations:
             )
 
     @staticmethod
+    def add_function_call_argument(
+        code: str,
+        function_name: str,
+        line_num: int,
+        arg_value: str,
+        arg_name: Optional[str] = None
+    ) -> EditResult:
+        """
+        Add an argument to a function call.
+
+        Examples:
+        - f() -> f(x)
+        - f(a) -> f(a, b)
+        - f(a) -> f(a, key=value)
+
+        Strategy: Direct AST manipulation
+        """
+        try:
+            tree = ast.parse(code)
+            modified = False
+
+            class ArgumentAdder(ast.NodeTransformer):
+                def visit_Call(self, node):
+                    nonlocal modified
+                    # Check if this is the right function call
+                    if hasattr(node, 'lineno') and node.lineno - 1 == line_num:
+                        if isinstance(node.func, ast.Name) and node.func.id == function_name:
+                            if arg_name:
+                                # Add keyword argument
+                                try:
+                                    value_ast = ast.parse(arg_value, mode='eval').body
+                                    node.keywords.append(
+                                        ast.keyword(arg=arg_name, value=value_ast)
+                                    )
+                                    modified = True
+                                except:
+                                    pass
+                            else:
+                                # Add positional argument
+                                try:
+                                    value_ast = ast.parse(arg_value, mode='eval').body
+                                    node.args.append(value_ast)
+                                    modified = True
+                                except:
+                                    pass
+                    self.generic_visit(node)
+                    return node
+
+            transformer = ArgumentAdder()
+            new_tree = transformer.visit(tree)
+
+            if modified:
+                new_code = ast.unparse(new_tree)
+                arg_desc = f"{arg_name}={arg_value}" if arg_name else arg_value
+                return EditResult(
+                    success=True,
+                    new_code=new_code,
+                    message=f"Added argument '{arg_desc}' to function call '{function_name}' on line {line_num}"
+                )
+            else:
+                return EditResult(
+                    success=False,
+                    new_code=code,
+                    message=f"Function call '{function_name}' not found on line {line_num}"
+                )
+
+        except Exception as e:
+            return EditResult(
+                success=False,
+                new_code=code,
+                message=f"Error adding argument: {str(e)}"
+            )
+
+    @staticmethod
+    def remove_function_call_argument(
+        code: str,
+        function_name: str,
+        line_num: int,
+        arg_index: Optional[int] = None,
+        arg_name: Optional[str] = None
+    ) -> EditResult:
+        """
+        Remove an argument from a function call.
+
+        Can remove by index (positional) or by name (keyword).
+
+        Strategy: Direct AST manipulation
+        """
+        try:
+            tree = ast.parse(code)
+            modified = False
+
+            class ArgumentRemover(ast.NodeTransformer):
+                def visit_Call(self, node):
+                    nonlocal modified
+                    if hasattr(node, 'lineno') and node.lineno - 1 == line_num:
+                        if isinstance(node.func, ast.Name) and node.func.id == function_name:
+                            if arg_name:
+                                # Remove keyword argument by name
+                                original_len = len(node.keywords)
+                                node.keywords = [
+                                    kw for kw in node.keywords
+                                    if kw.arg != arg_name
+                                ]
+                                modified = len(node.keywords) < original_len
+                            elif arg_index is not None and 0 <= arg_index < len(node.args):
+                                # Remove positional argument by index
+                                del node.args[arg_index]
+                                modified = True
+                    self.generic_visit(node)
+                    return node
+
+            transformer = ArgumentRemover()
+            new_tree = transformer.visit(tree)
+
+            if modified:
+                new_code = ast.unparse(new_tree)
+                arg_desc = arg_name if arg_name else f"argument at index {arg_index}"
+                return EditResult(
+                    success=True,
+                    new_code=new_code,
+                    message=f"Removed {arg_desc} from function call '{function_name}' on line {line_num}"
+                )
+            else:
+                return EditResult(
+                    success=False,
+                    new_code=code,
+                    message=f"Argument not found in function call '{function_name}' on line {line_num}"
+                )
+
+        except Exception as e:
+            return EditResult(
+                success=False,
+                new_code=code,
+                message=f"Error removing argument: {str(e)}"
+            )
+
+    @staticmethod
+    def change_function_call_name(
+        code: str,
+        old_name: str,
+        new_name: str,
+        line_num: Optional[int] = None
+    ) -> EditResult:
+        """
+        Change the name of a function call.
+
+        If line_num is provided, only changes the call on that line.
+        Otherwise, changes all calls to that function.
+
+        Strategy: Direct AST manipulation
+        """
+        try:
+            tree = ast.parse(code)
+            modified = False
+
+            class FunctionCallRenamer(ast.NodeTransformer):
+                def visit_Call(self, node):
+                    nonlocal modified
+                    if isinstance(node.func, ast.Name) and node.func.id == old_name:
+                        if line_num is None or (hasattr(node, 'lineno') and node.lineno - 1 == line_num):
+                            node.func.id = new_name
+                            modified = True
+                    self.generic_visit(node)
+                    return node
+
+            transformer = FunctionCallRenamer()
+            new_tree = transformer.visit(tree)
+
+            if modified:
+                new_code = ast.unparse(new_tree)
+                location = f"on line {line_num}" if line_num is not None else "throughout code"
+                return EditResult(
+                    success=True,
+                    new_code=new_code,
+                    message=f"Renamed function call '{old_name}' to '{new_name}' {location}"
+                )
+            else:
+                return EditResult(
+                    success=False,
+                    new_code=code,
+                    message=f"Function call '{old_name}' not found"
+                )
+
+        except Exception as e:
+            return EditResult(
+                success=False,
+                new_code=code,
+                message=f"Error renaming function call: {str(e)}"
+            )
+
+    @staticmethod
+    def reorder_function_call_arguments(
+        code: str,
+        function_name: str,
+        line_num: int,
+        new_order: List[int]
+    ) -> EditResult:
+        """
+        Reorder positional arguments in a function call.
+
+        new_order: List of indices specifying the new order.
+        Example: [1, 0, 2] moves the second arg to first position.
+
+        Strategy: Direct AST manipulation
+        """
+        try:
+            tree = ast.parse(code)
+            modified = False
+
+            class ArgumentReorderer(ast.NodeTransformer):
+                def visit_Call(self, node):
+                    nonlocal modified
+                    if hasattr(node, 'lineno') and node.lineno - 1 == line_num:
+                        if isinstance(node.func, ast.Name) and node.func.id == function_name:
+                            # Validate new_order
+                            if (len(new_order) == len(node.args) and
+                                set(new_order) == set(range(len(node.args)))):
+                                # Reorder arguments
+                                old_args = node.args.copy()
+                                node.args = [old_args[i] for i in new_order]
+                                modified = True
+                    self.generic_visit(node)
+                    return node
+
+            transformer = ArgumentReorderer()
+            new_tree = transformer.visit(tree)
+
+            if modified:
+                new_code = ast.unparse(new_tree)
+                return EditResult(
+                    success=True,
+                    new_code=new_code,
+                    message=f"Reordered arguments in function call '{function_name}' on line {line_num}"
+                )
+            else:
+                return EditResult(
+                    success=False,
+                    new_code=code,
+                    message=f"Could not reorder arguments for function call '{function_name}' on line {line_num}"
+                )
+
+        except Exception as e:
+            return EditResult(
+                success=False,
+                new_code=code,
+                message=f"Error reordering arguments: {str(e)}"
+            )
+
+    @staticmethod
+    def change_function_call_argument(
+        code: str,
+        function_name: str,
+        line_num: int,
+        arg_index: Optional[int] = None,
+        arg_name: Optional[str] = None,
+        new_value: str = None
+    ) -> EditResult:
+        """
+        Change the value of a specific argument in a function call.
+
+        Can target by index (positional) or by name (keyword).
+
+        Strategy: Direct AST manipulation
+        """
+        try:
+            tree = ast.parse(code)
+            modified = False
+
+            class ArgumentChanger(ast.NodeTransformer):
+                def visit_Call(self, node):
+                    nonlocal modified
+                    if hasattr(node, 'lineno') and node.lineno - 1 == line_num:
+                        if isinstance(node.func, ast.Name) and node.func.id == function_name:
+                            try:
+                                new_value_ast = ast.parse(new_value, mode='eval').body
+
+                                if arg_name:
+                                    # Change keyword argument by name
+                                    for kw in node.keywords:
+                                        if kw.arg == arg_name:
+                                            kw.value = new_value_ast
+                                            modified = True
+                                            break
+                                elif arg_index is not None and 0 <= arg_index < len(node.args):
+                                    # Change positional argument by index
+                                    node.args[arg_index] = new_value_ast
+                                    modified = True
+                            except:
+                                pass
+                    self.generic_visit(node)
+                    return node
+
+            transformer = ArgumentChanger()
+            new_tree = transformer.visit(tree)
+
+            if modified:
+                new_code = ast.unparse(new_tree)
+                arg_desc = arg_name if arg_name else f"argument at index {arg_index}"
+                return EditResult(
+                    success=True,
+                    new_code=new_code,
+                    message=f"Changed {arg_desc} to '{new_value}' in function call '{function_name}' on line {line_num}"
+                )
+            else:
+                return EditResult(
+                    success=False,
+                    new_code=code,
+                    message=f"Could not change argument in function call '{function_name}' on line {line_num}"
+                )
+
+        except Exception as e:
+            return EditResult(
+                success=False,
+                new_code=code,
+                message=f"Error changing argument: {str(e)}"
+            )
+
+    @staticmethod
     def add_parameter(code: str, function_name: str, param_name: str) -> EditResult:
         """
         Add a parameter to a function signature.
@@ -290,6 +609,325 @@ class DirectEditOperations:
             )
 
     @staticmethod
+    def add_function_call_argument(
+        code: str,
+        function_name: str,
+        line_num: int,
+        arg_value: str,
+        arg_name: Optional[str] = None
+    ) -> EditResult:
+        """
+        Add an argument to a function call.
+
+        Examples:
+        - f() -> f(x)
+        - f(a) -> f(a, b)
+        - f(a) -> f(a, key=value)
+
+        Strategy: Direct AST manipulation
+        """
+        try:
+            tree = ast.parse(code)
+            modified = False
+
+            class ArgumentAdder(ast.NodeTransformer):
+                def visit_Call(self, node):
+                    nonlocal modified
+                    # Check if this is the right function call
+                    if hasattr(node, 'lineno') and node.lineno - 1 == line_num:
+                        if isinstance(node.func, ast.Name) and node.func.id == function_name:
+                            if arg_name:
+                                # Add keyword argument
+                                try:
+                                    value_ast = ast.parse(arg_value, mode='eval').body
+                                    node.keywords.append(
+                                        ast.keyword(arg=arg_name, value=value_ast)
+                                    )
+                                    modified = True
+                                except:
+                                    pass
+                            else:
+                                # Add positional argument
+                                try:
+                                    value_ast = ast.parse(arg_value, mode='eval').body
+                                    node.args.append(value_ast)
+                                    modified = True
+                                except:
+                                    pass
+                    self.generic_visit(node)
+                    return node
+
+            transformer = ArgumentAdder()
+            new_tree = transformer.visit(tree)
+
+            if modified:
+                new_code = ast.unparse(new_tree)
+                arg_desc = f"{arg_name}={arg_value}" if arg_name else arg_value
+                return EditResult(
+                    success=True,
+                    new_code=new_code,
+                    message=f"Added argument '{arg_desc}' to function call '{function_name}' on line {line_num}"
+                )
+            else:
+                return EditResult(
+                    success=False,
+                    new_code=code,
+                    message=f"Function call '{function_name}' not found on line {line_num}"
+                )
+
+        except Exception as e:
+            return EditResult(
+                success=False,
+                new_code=code,
+                message=f"Error adding argument: {str(e)}"
+            )
+
+    @staticmethod
+    def remove_function_call_argument(
+        code: str,
+        function_name: str,
+        line_num: int,
+        arg_index: Optional[int] = None,
+        arg_name: Optional[str] = None
+    ) -> EditResult:
+        """
+        Remove an argument from a function call.
+
+        Can remove by index (positional) or by name (keyword).
+
+        Strategy: Direct AST manipulation
+        """
+        try:
+            tree = ast.parse(code)
+            modified = False
+
+            class ArgumentRemover(ast.NodeTransformer):
+                def visit_Call(self, node):
+                    nonlocal modified
+                    if hasattr(node, 'lineno') and node.lineno - 1 == line_num:
+                        if isinstance(node.func, ast.Name) and node.func.id == function_name:
+                            if arg_name:
+                                # Remove keyword argument by name
+                                original_len = len(node.keywords)
+                                node.keywords = [
+                                    kw for kw in node.keywords
+                                    if kw.arg != arg_name
+                                ]
+                                modified = len(node.keywords) < original_len
+                            elif arg_index is not None and 0 <= arg_index < len(node.args):
+                                # Remove positional argument by index
+                                del node.args[arg_index]
+                                modified = True
+                    self.generic_visit(node)
+                    return node
+
+            transformer = ArgumentRemover()
+            new_tree = transformer.visit(tree)
+
+            if modified:
+                new_code = ast.unparse(new_tree)
+                arg_desc = arg_name if arg_name else f"argument at index {arg_index}"
+                return EditResult(
+                    success=True,
+                    new_code=new_code,
+                    message=f"Removed {arg_desc} from function call '{function_name}' on line {line_num}"
+                )
+            else:
+                return EditResult(
+                    success=False,
+                    new_code=code,
+                    message=f"Argument not found in function call '{function_name}' on line {line_num}"
+                )
+
+        except Exception as e:
+            return EditResult(
+                success=False,
+                new_code=code,
+                message=f"Error removing argument: {str(e)}"
+            )
+
+    @staticmethod
+    def change_function_call_name(
+        code: str,
+        old_name: str,
+        new_name: str,
+        line_num: Optional[int] = None
+    ) -> EditResult:
+        """
+        Change the name of a function call.
+
+        If line_num is provided, only changes the call on that line.
+        Otherwise, changes all calls to that function.
+
+        Strategy: Direct AST manipulation
+        """
+        try:
+            tree = ast.parse(code)
+            modified = False
+
+            class FunctionCallRenamer(ast.NodeTransformer):
+                def visit_Call(self, node):
+                    nonlocal modified
+                    if isinstance(node.func, ast.Name) and node.func.id == old_name:
+                        if line_num is None or (hasattr(node, 'lineno') and node.lineno - 1 == line_num):
+                            node.func.id = new_name
+                            modified = True
+                    self.generic_visit(node)
+                    return node
+
+            transformer = FunctionCallRenamer()
+            new_tree = transformer.visit(tree)
+
+            if modified:
+                new_code = ast.unparse(new_tree)
+                location = f"on line {line_num}" if line_num is not None else "throughout code"
+                return EditResult(
+                    success=True,
+                    new_code=new_code,
+                    message=f"Renamed function call '{old_name}' to '{new_name}' {location}"
+                )
+            else:
+                return EditResult(
+                    success=False,
+                    new_code=code,
+                    message=f"Function call '{old_name}' not found"
+                )
+
+        except Exception as e:
+            return EditResult(
+                success=False,
+                new_code=code,
+                message=f"Error renaming function call: {str(e)}"
+            )
+
+    @staticmethod
+    def reorder_function_call_arguments(
+        code: str,
+        function_name: str,
+        line_num: int,
+        new_order: List[int]
+    ) -> EditResult:
+        """
+        Reorder positional arguments in a function call.
+
+        new_order: List of indices specifying the new order.
+        Example: [1, 0, 2] moves the second arg to first position.
+
+        Strategy: Direct AST manipulation
+        """
+        try:
+            tree = ast.parse(code)
+            modified = False
+
+            class ArgumentReorderer(ast.NodeTransformer):
+                def visit_Call(self, node):
+                    nonlocal modified
+                    if hasattr(node, 'lineno') and node.lineno - 1 == line_num:
+                        if isinstance(node.func, ast.Name) and node.func.id == function_name:
+                            # Validate new_order
+                            if (len(new_order) == len(node.args) and
+                                set(new_order) == set(range(len(node.args)))):
+                                # Reorder arguments
+                                old_args = node.args.copy()
+                                node.args = [old_args[i] for i in new_order]
+                                modified = True
+                    self.generic_visit(node)
+                    return node
+
+            transformer = ArgumentReorderer()
+            new_tree = transformer.visit(tree)
+
+            if modified:
+                new_code = ast.unparse(new_tree)
+                return EditResult(
+                    success=True,
+                    new_code=new_code,
+                    message=f"Reordered arguments in function call '{function_name}' on line {line_num}"
+                )
+            else:
+                return EditResult(
+                    success=False,
+                    new_code=code,
+                    message=f"Could not reorder arguments for function call '{function_name}' on line {line_num}"
+                )
+
+        except Exception as e:
+            return EditResult(
+                success=False,
+                new_code=code,
+                message=f"Error reordering arguments: {str(e)}"
+            )
+
+    @staticmethod
+    def change_function_call_argument(
+        code: str,
+        function_name: str,
+        line_num: int,
+        arg_index: Optional[int] = None,
+        arg_name: Optional[str] = None,
+        new_value: str = None
+    ) -> EditResult:
+        """
+        Change the value of a specific argument in a function call.
+
+        Can target by index (positional) or by name (keyword).
+
+        Strategy: Direct AST manipulation
+        """
+        try:
+            tree = ast.parse(code)
+            modified = False
+
+            class ArgumentChanger(ast.NodeTransformer):
+                def visit_Call(self, node):
+                    nonlocal modified
+                    if hasattr(node, 'lineno') and node.lineno - 1 == line_num:
+                        if isinstance(node.func, ast.Name) and node.func.id == function_name:
+                            try:
+                                new_value_ast = ast.parse(new_value, mode='eval').body
+
+                                if arg_name:
+                                    # Change keyword argument by name
+                                    for kw in node.keywords:
+                                        if kw.arg == arg_name:
+                                            kw.value = new_value_ast
+                                            modified = True
+                                            break
+                                elif arg_index is not None and 0 <= arg_index < len(node.args):
+                                    # Change positional argument by index
+                                    node.args[arg_index] = new_value_ast
+                                    modified = True
+                            except:
+                                pass
+                    self.generic_visit(node)
+                    return node
+
+            transformer = ArgumentChanger()
+            new_tree = transformer.visit(tree)
+
+            if modified:
+                new_code = ast.unparse(new_tree)
+                arg_desc = arg_name if arg_name else f"argument at index {arg_index}"
+                return EditResult(
+                    success=True,
+                    new_code=new_code,
+                    message=f"Changed {arg_desc} to '{new_value}' in function call '{function_name}' on line {line_num}"
+                )
+            else:
+                return EditResult(
+                    success=False,
+                    new_code=code,
+                    message=f"Could not change argument in function call '{function_name}' on line {line_num}"
+                )
+
+        except Exception as e:
+            return EditResult(
+                success=False,
+                new_code=code,
+                message=f"Error changing argument: {str(e)}"
+            )
+
+    @staticmethod
     def remove_parameter(code: str, function_name: str, param_name: str) -> EditResult:
         """
         Remove a parameter from a function signature.
@@ -335,6 +973,325 @@ class DirectEditOperations:
                 success=False,
                 new_code=code,
                 message=f"Error: {str(e)}"
+            )
+
+    @staticmethod
+    def add_function_call_argument(
+        code: str,
+        function_name: str,
+        line_num: int,
+        arg_value: str,
+        arg_name: Optional[str] = None
+    ) -> EditResult:
+        """
+        Add an argument to a function call.
+
+        Examples:
+        - f() -> f(x)
+        - f(a) -> f(a, b)
+        - f(a) -> f(a, key=value)
+
+        Strategy: Direct AST manipulation
+        """
+        try:
+            tree = ast.parse(code)
+            modified = False
+
+            class ArgumentAdder(ast.NodeTransformer):
+                def visit_Call(self, node):
+                    nonlocal modified
+                    # Check if this is the right function call
+                    if hasattr(node, 'lineno') and node.lineno - 1 == line_num:
+                        if isinstance(node.func, ast.Name) and node.func.id == function_name:
+                            if arg_name:
+                                # Add keyword argument
+                                try:
+                                    value_ast = ast.parse(arg_value, mode='eval').body
+                                    node.keywords.append(
+                                        ast.keyword(arg=arg_name, value=value_ast)
+                                    )
+                                    modified = True
+                                except:
+                                    pass
+                            else:
+                                # Add positional argument
+                                try:
+                                    value_ast = ast.parse(arg_value, mode='eval').body
+                                    node.args.append(value_ast)
+                                    modified = True
+                                except:
+                                    pass
+                    self.generic_visit(node)
+                    return node
+
+            transformer = ArgumentAdder()
+            new_tree = transformer.visit(tree)
+
+            if modified:
+                new_code = ast.unparse(new_tree)
+                arg_desc = f"{arg_name}={arg_value}" if arg_name else arg_value
+                return EditResult(
+                    success=True,
+                    new_code=new_code,
+                    message=f"Added argument '{arg_desc}' to function call '{function_name}' on line {line_num}"
+                )
+            else:
+                return EditResult(
+                    success=False,
+                    new_code=code,
+                    message=f"Function call '{function_name}' not found on line {line_num}"
+                )
+
+        except Exception as e:
+            return EditResult(
+                success=False,
+                new_code=code,
+                message=f"Error adding argument: {str(e)}"
+            )
+
+    @staticmethod
+    def remove_function_call_argument(
+        code: str,
+        function_name: str,
+        line_num: int,
+        arg_index: Optional[int] = None,
+        arg_name: Optional[str] = None
+    ) -> EditResult:
+        """
+        Remove an argument from a function call.
+
+        Can remove by index (positional) or by name (keyword).
+
+        Strategy: Direct AST manipulation
+        """
+        try:
+            tree = ast.parse(code)
+            modified = False
+
+            class ArgumentRemover(ast.NodeTransformer):
+                def visit_Call(self, node):
+                    nonlocal modified
+                    if hasattr(node, 'lineno') and node.lineno - 1 == line_num:
+                        if isinstance(node.func, ast.Name) and node.func.id == function_name:
+                            if arg_name:
+                                # Remove keyword argument by name
+                                original_len = len(node.keywords)
+                                node.keywords = [
+                                    kw for kw in node.keywords
+                                    if kw.arg != arg_name
+                                ]
+                                modified = len(node.keywords) < original_len
+                            elif arg_index is not None and 0 <= arg_index < len(node.args):
+                                # Remove positional argument by index
+                                del node.args[arg_index]
+                                modified = True
+                    self.generic_visit(node)
+                    return node
+
+            transformer = ArgumentRemover()
+            new_tree = transformer.visit(tree)
+
+            if modified:
+                new_code = ast.unparse(new_tree)
+                arg_desc = arg_name if arg_name else f"argument at index {arg_index}"
+                return EditResult(
+                    success=True,
+                    new_code=new_code,
+                    message=f"Removed {arg_desc} from function call '{function_name}' on line {line_num}"
+                )
+            else:
+                return EditResult(
+                    success=False,
+                    new_code=code,
+                    message=f"Argument not found in function call '{function_name}' on line {line_num}"
+                )
+
+        except Exception as e:
+            return EditResult(
+                success=False,
+                new_code=code,
+                message=f"Error removing argument: {str(e)}"
+            )
+
+    @staticmethod
+    def change_function_call_name(
+        code: str,
+        old_name: str,
+        new_name: str,
+        line_num: Optional[int] = None
+    ) -> EditResult:
+        """
+        Change the name of a function call.
+
+        If line_num is provided, only changes the call on that line.
+        Otherwise, changes all calls to that function.
+
+        Strategy: Direct AST manipulation
+        """
+        try:
+            tree = ast.parse(code)
+            modified = False
+
+            class FunctionCallRenamer(ast.NodeTransformer):
+                def visit_Call(self, node):
+                    nonlocal modified
+                    if isinstance(node.func, ast.Name) and node.func.id == old_name:
+                        if line_num is None or (hasattr(node, 'lineno') and node.lineno - 1 == line_num):
+                            node.func.id = new_name
+                            modified = True
+                    self.generic_visit(node)
+                    return node
+
+            transformer = FunctionCallRenamer()
+            new_tree = transformer.visit(tree)
+
+            if modified:
+                new_code = ast.unparse(new_tree)
+                location = f"on line {line_num}" if line_num is not None else "throughout code"
+                return EditResult(
+                    success=True,
+                    new_code=new_code,
+                    message=f"Renamed function call '{old_name}' to '{new_name}' {location}"
+                )
+            else:
+                return EditResult(
+                    success=False,
+                    new_code=code,
+                    message=f"Function call '{old_name}' not found"
+                )
+
+        except Exception as e:
+            return EditResult(
+                success=False,
+                new_code=code,
+                message=f"Error renaming function call: {str(e)}"
+            )
+
+    @staticmethod
+    def reorder_function_call_arguments(
+        code: str,
+        function_name: str,
+        line_num: int,
+        new_order: List[int]
+    ) -> EditResult:
+        """
+        Reorder positional arguments in a function call.
+
+        new_order: List of indices specifying the new order.
+        Example: [1, 0, 2] moves the second arg to first position.
+
+        Strategy: Direct AST manipulation
+        """
+        try:
+            tree = ast.parse(code)
+            modified = False
+
+            class ArgumentReorderer(ast.NodeTransformer):
+                def visit_Call(self, node):
+                    nonlocal modified
+                    if hasattr(node, 'lineno') and node.lineno - 1 == line_num:
+                        if isinstance(node.func, ast.Name) and node.func.id == function_name:
+                            # Validate new_order
+                            if (len(new_order) == len(node.args) and
+                                set(new_order) == set(range(len(node.args)))):
+                                # Reorder arguments
+                                old_args = node.args.copy()
+                                node.args = [old_args[i] for i in new_order]
+                                modified = True
+                    self.generic_visit(node)
+                    return node
+
+            transformer = ArgumentReorderer()
+            new_tree = transformer.visit(tree)
+
+            if modified:
+                new_code = ast.unparse(new_tree)
+                return EditResult(
+                    success=True,
+                    new_code=new_code,
+                    message=f"Reordered arguments in function call '{function_name}' on line {line_num}"
+                )
+            else:
+                return EditResult(
+                    success=False,
+                    new_code=code,
+                    message=f"Could not reorder arguments for function call '{function_name}' on line {line_num}"
+                )
+
+        except Exception as e:
+            return EditResult(
+                success=False,
+                new_code=code,
+                message=f"Error reordering arguments: {str(e)}"
+            )
+
+    @staticmethod
+    def change_function_call_argument(
+        code: str,
+        function_name: str,
+        line_num: int,
+        arg_index: Optional[int] = None,
+        arg_name: Optional[str] = None,
+        new_value: str = None
+    ) -> EditResult:
+        """
+        Change the value of a specific argument in a function call.
+
+        Can target by index (positional) or by name (keyword).
+
+        Strategy: Direct AST manipulation
+        """
+        try:
+            tree = ast.parse(code)
+            modified = False
+
+            class ArgumentChanger(ast.NodeTransformer):
+                def visit_Call(self, node):
+                    nonlocal modified
+                    if hasattr(node, 'lineno') and node.lineno - 1 == line_num:
+                        if isinstance(node.func, ast.Name) and node.func.id == function_name:
+                            try:
+                                new_value_ast = ast.parse(new_value, mode='eval').body
+
+                                if arg_name:
+                                    # Change keyword argument by name
+                                    for kw in node.keywords:
+                                        if kw.arg == arg_name:
+                                            kw.value = new_value_ast
+                                            modified = True
+                                            break
+                                elif arg_index is not None and 0 <= arg_index < len(node.args):
+                                    # Change positional argument by index
+                                    node.args[arg_index] = new_value_ast
+                                    modified = True
+                            except:
+                                pass
+                    self.generic_visit(node)
+                    return node
+
+            transformer = ArgumentChanger()
+            new_tree = transformer.visit(tree)
+
+            if modified:
+                new_code = ast.unparse(new_tree)
+                arg_desc = arg_name if arg_name else f"argument at index {arg_index}"
+                return EditResult(
+                    success=True,
+                    new_code=new_code,
+                    message=f"Changed {arg_desc} to '{new_value}' in function call '{function_name}' on line {line_num}"
+                )
+            else:
+                return EditResult(
+                    success=False,
+                    new_code=code,
+                    message=f"Could not change argument in function call '{function_name}' on line {line_num}"
+                )
+
+        except Exception as e:
+            return EditResult(
+                success=False,
+                new_code=code,
+                message=f"Error changing argument: {str(e)}"
             )
 
     @staticmethod
@@ -441,4 +1398,323 @@ class DirectEditOperations:
                 success=False,
                 new_code=code,
                 message=f"Error: {str(e)}"
+            )
+
+    @staticmethod
+    def add_function_call_argument(
+        code: str,
+        function_name: str,
+        line_num: int,
+        arg_value: str,
+        arg_name: Optional[str] = None
+    ) -> EditResult:
+        """
+        Add an argument to a function call.
+
+        Examples:
+        - f() -> f(x)
+        - f(a) -> f(a, b)
+        - f(a) -> f(a, key=value)
+
+        Strategy: Direct AST manipulation
+        """
+        try:
+            tree = ast.parse(code)
+            modified = False
+
+            class ArgumentAdder(ast.NodeTransformer):
+                def visit_Call(self, node):
+                    nonlocal modified
+                    # Check if this is the right function call
+                    if hasattr(node, 'lineno') and node.lineno - 1 == line_num:
+                        if isinstance(node.func, ast.Name) and node.func.id == function_name:
+                            if arg_name:
+                                # Add keyword argument
+                                try:
+                                    value_ast = ast.parse(arg_value, mode='eval').body
+                                    node.keywords.append(
+                                        ast.keyword(arg=arg_name, value=value_ast)
+                                    )
+                                    modified = True
+                                except:
+                                    pass
+                            else:
+                                # Add positional argument
+                                try:
+                                    value_ast = ast.parse(arg_value, mode='eval').body
+                                    node.args.append(value_ast)
+                                    modified = True
+                                except:
+                                    pass
+                    self.generic_visit(node)
+                    return node
+
+            transformer = ArgumentAdder()
+            new_tree = transformer.visit(tree)
+
+            if modified:
+                new_code = ast.unparse(new_tree)
+                arg_desc = f"{arg_name}={arg_value}" if arg_name else arg_value
+                return EditResult(
+                    success=True,
+                    new_code=new_code,
+                    message=f"Added argument '{arg_desc}' to function call '{function_name}' on line {line_num}"
+                )
+            else:
+                return EditResult(
+                    success=False,
+                    new_code=code,
+                    message=f"Function call '{function_name}' not found on line {line_num}"
+                )
+
+        except Exception as e:
+            return EditResult(
+                success=False,
+                new_code=code,
+                message=f"Error adding argument: {str(e)}"
+            )
+
+    @staticmethod
+    def remove_function_call_argument(
+        code: str,
+        function_name: str,
+        line_num: int,
+        arg_index: Optional[int] = None,
+        arg_name: Optional[str] = None
+    ) -> EditResult:
+        """
+        Remove an argument from a function call.
+
+        Can remove by index (positional) or by name (keyword).
+
+        Strategy: Direct AST manipulation
+        """
+        try:
+            tree = ast.parse(code)
+            modified = False
+
+            class ArgumentRemover(ast.NodeTransformer):
+                def visit_Call(self, node):
+                    nonlocal modified
+                    if hasattr(node, 'lineno') and node.lineno - 1 == line_num:
+                        if isinstance(node.func, ast.Name) and node.func.id == function_name:
+                            if arg_name:
+                                # Remove keyword argument by name
+                                original_len = len(node.keywords)
+                                node.keywords = [
+                                    kw for kw in node.keywords
+                                    if kw.arg != arg_name
+                                ]
+                                modified = len(node.keywords) < original_len
+                            elif arg_index is not None and 0 <= arg_index < len(node.args):
+                                # Remove positional argument by index
+                                del node.args[arg_index]
+                                modified = True
+                    self.generic_visit(node)
+                    return node
+
+            transformer = ArgumentRemover()
+            new_tree = transformer.visit(tree)
+
+            if modified:
+                new_code = ast.unparse(new_tree)
+                arg_desc = arg_name if arg_name else f"argument at index {arg_index}"
+                return EditResult(
+                    success=True,
+                    new_code=new_code,
+                    message=f"Removed {arg_desc} from function call '{function_name}' on line {line_num}"
+                )
+            else:
+                return EditResult(
+                    success=False,
+                    new_code=code,
+                    message=f"Argument not found in function call '{function_name}' on line {line_num}"
+                )
+
+        except Exception as e:
+            return EditResult(
+                success=False,
+                new_code=code,
+                message=f"Error removing argument: {str(e)}"
+            )
+
+    @staticmethod
+    def change_function_call_name(
+        code: str,
+        old_name: str,
+        new_name: str,
+        line_num: Optional[int] = None
+    ) -> EditResult:
+        """
+        Change the name of a function call.
+
+        If line_num is provided, only changes the call on that line.
+        Otherwise, changes all calls to that function.
+
+        Strategy: Direct AST manipulation
+        """
+        try:
+            tree = ast.parse(code)
+            modified = False
+
+            class FunctionCallRenamer(ast.NodeTransformer):
+                def visit_Call(self, node):
+                    nonlocal modified
+                    if isinstance(node.func, ast.Name) and node.func.id == old_name:
+                        if line_num is None or (hasattr(node, 'lineno') and node.lineno - 1 == line_num):
+                            node.func.id = new_name
+                            modified = True
+                    self.generic_visit(node)
+                    return node
+
+            transformer = FunctionCallRenamer()
+            new_tree = transformer.visit(tree)
+
+            if modified:
+                new_code = ast.unparse(new_tree)
+                location = f"on line {line_num}" if line_num is not None else "throughout code"
+                return EditResult(
+                    success=True,
+                    new_code=new_code,
+                    message=f"Renamed function call '{old_name}' to '{new_name}' {location}"
+                )
+            else:
+                return EditResult(
+                    success=False,
+                    new_code=code,
+                    message=f"Function call '{old_name}' not found"
+                )
+
+        except Exception as e:
+            return EditResult(
+                success=False,
+                new_code=code,
+                message=f"Error renaming function call: {str(e)}"
+            )
+
+    @staticmethod
+    def reorder_function_call_arguments(
+        code: str,
+        function_name: str,
+        line_num: int,
+        new_order: List[int]
+    ) -> EditResult:
+        """
+        Reorder positional arguments in a function call.
+
+        new_order: List of indices specifying the new order.
+        Example: [1, 0, 2] moves the second arg to first position.
+
+        Strategy: Direct AST manipulation
+        """
+        try:
+            tree = ast.parse(code)
+            modified = False
+
+            class ArgumentReorderer(ast.NodeTransformer):
+                def visit_Call(self, node):
+                    nonlocal modified
+                    if hasattr(node, 'lineno') and node.lineno - 1 == line_num:
+                        if isinstance(node.func, ast.Name) and node.func.id == function_name:
+                            # Validate new_order
+                            if (len(new_order) == len(node.args) and
+                                set(new_order) == set(range(len(node.args)))):
+                                # Reorder arguments
+                                old_args = node.args.copy()
+                                node.args = [old_args[i] for i in new_order]
+                                modified = True
+                    self.generic_visit(node)
+                    return node
+
+            transformer = ArgumentReorderer()
+            new_tree = transformer.visit(tree)
+
+            if modified:
+                new_code = ast.unparse(new_tree)
+                return EditResult(
+                    success=True,
+                    new_code=new_code,
+                    message=f"Reordered arguments in function call '{function_name}' on line {line_num}"
+                )
+            else:
+                return EditResult(
+                    success=False,
+                    new_code=code,
+                    message=f"Could not reorder arguments for function call '{function_name}' on line {line_num}"
+                )
+
+        except Exception as e:
+            return EditResult(
+                success=False,
+                new_code=code,
+                message=f"Error reordering arguments: {str(e)}"
+            )
+
+    @staticmethod
+    def change_function_call_argument(
+        code: str,
+        function_name: str,
+        line_num: int,
+        arg_index: Optional[int] = None,
+        arg_name: Optional[str] = None,
+        new_value: str = None
+    ) -> EditResult:
+        """
+        Change the value of a specific argument in a function call.
+
+        Can target by index (positional) or by name (keyword).
+
+        Strategy: Direct AST manipulation
+        """
+        try:
+            tree = ast.parse(code)
+            modified = False
+
+            class ArgumentChanger(ast.NodeTransformer):
+                def visit_Call(self, node):
+                    nonlocal modified
+                    if hasattr(node, 'lineno') and node.lineno - 1 == line_num:
+                        if isinstance(node.func, ast.Name) and node.func.id == function_name:
+                            try:
+                                new_value_ast = ast.parse(new_value, mode='eval').body
+
+                                if arg_name:
+                                    # Change keyword argument by name
+                                    for kw in node.keywords:
+                                        if kw.arg == arg_name:
+                                            kw.value = new_value_ast
+                                            modified = True
+                                            break
+                                elif arg_index is not None and 0 <= arg_index < len(node.args):
+                                    # Change positional argument by index
+                                    node.args[arg_index] = new_value_ast
+                                    modified = True
+                            except:
+                                pass
+                    self.generic_visit(node)
+                    return node
+
+            transformer = ArgumentChanger()
+            new_tree = transformer.visit(tree)
+
+            if modified:
+                new_code = ast.unparse(new_tree)
+                arg_desc = arg_name if arg_name else f"argument at index {arg_index}"
+                return EditResult(
+                    success=True,
+                    new_code=new_code,
+                    message=f"Changed {arg_desc} to '{new_value}' in function call '{function_name}' on line {line_num}"
+                )
+            else:
+                return EditResult(
+                    success=False,
+                    new_code=code,
+                    message=f"Could not change argument in function call '{function_name}' on line {line_num}"
+                )
+
+        except Exception as e:
+            return EditResult(
+                success=False,
+                new_code=code,
+                message=f"Error changing argument: {str(e)}"
             )

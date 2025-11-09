@@ -15,6 +15,7 @@ from dataclasses import dataclass, field
 from typing import List, Tuple, Optional, Dict, Any
 from mvp_parser import IntentNode
 from mvp_config import MVPConfig, DEFAULT_CONFIG
+from mvp_implementation_generator import ImplementationGenerator
 
 
 @dataclass
@@ -41,7 +42,8 @@ class CodeGenerator:
     def __init__(
         self,
         openai_api_key: Optional[str] = None,
-        config: Optional[MVPConfig] = None
+        config: Optional[MVPConfig] = None,
+        generate_implementations: bool = True
     ):
         """
         Initialize code generator.
@@ -49,9 +51,11 @@ class CodeGenerator:
         Args:
             openai_api_key: OpenAI API key (or use OPENAI_API_KEY env var)
             config: Configuration object (uses DEFAULT_CONFIG if None)
+            generate_implementations: Whether to generate implementations for undefined functions
         """
         self.config = config or DEFAULT_CONFIG
         self.api_key = openai_api_key or os.getenv('OPENAI_API_KEY')
+        self.generate_implementations = generate_implementations
 
         if not self.api_key:
             print("Warning: OpenAI API key not provided. LLM features will be disabled.")
@@ -66,6 +70,12 @@ class CodeGenerator:
             except Exception as e:
                 print(f"Warning: Failed to initialize OpenAI client: {e}")
                 self.client = None
+
+        # Initialize implementation generator
+        if self.generate_implementations:
+            self.impl_generator = ImplementationGenerator(openai_api_key=self.api_key)
+        else:
+            self.impl_generator = None
 
     def generate_with_mapping(
         self,
@@ -100,7 +110,7 @@ class CodeGenerator:
 
             # Check if this is pure Python, NL, or hybrid
             has_nl = any(n.type in ('nl_phrase', 'hole') for n in line_nodes)
-            has_python = any(n.type in ('identifier', 'function_call', 'literal', 'operator', 'function_def') for n in line_nodes)
+            has_python = any(n.type in ('identifier', 'function_call', 'literal', 'operator', 'function_def', 'expr_stmt') for n in line_nodes)
 
             if has_nl:
                 # Need LLM generation
@@ -127,7 +137,7 @@ class CodeGenerator:
 
                 # Create 1:1 mappings
                 for node in line_nodes:
-                    if node.type in ('identifier', 'function_call', 'function_def'):
+                    if node.type in ('identifier', 'function_call', 'function_def', 'expr_stmt'):
                         mappings.append(Mapping(
                             node_id=node.id,
                             slices=[CodeSlice(
@@ -144,6 +154,15 @@ class CodeGenerator:
 
         final_code = '\n'.join(generated_lines)
         
+        # Generate implementations for undefined functions if enabled
+        if self.impl_generator:
+            final_code, implementations = self.impl_generator.generate_complete_code(
+                nodes, context, final_code
+            )
+            # Store implementations for later reference
+            if hasattr(self, 'last_implementations'):
+                self.last_implementations = implementations
+        
         # Rebuild mappings from the final generated code to get accurate line/col info
         mappings = self._rebuild_mappings_from_ast(final_code, nodes)
         
@@ -155,6 +174,11 @@ class CodeGenerator:
 
         For pure Python nodes, we can just concatenate them intelligently.
         """
+        # If there's an expr_stmt node (standalone expression), return it
+        for node in nodes:
+            if node.type == 'expr_stmt':
+                return node.metadata.get('full_statement', node.content)
+
         # If there's a python_stmt node, just return it
         for node in nodes:
             if node.type == 'python_stmt':
@@ -253,9 +277,40 @@ class CodeGenerator:
                 return f"def {func_node.content}({params}):\n    ..."
 
         if funcs:
-            func_name = funcs[0].content
-            args = ', '.join(r.content for r in refs) if refs else ''
-            return f"{func_name}({args})"
+            # Reconstruct function call with arguments
+            func = funcs[0]
+            func_name = func.content
+            
+            # Check if we have full_call metadata
+            if func.metadata.get('full_call'):
+                return func.metadata['full_call']
+            
+            # Otherwise, try to reconstruct from arg nodes
+            arg_node_ids = func.metadata.get('arg_node_ids', [])
+            kwarg_node_ids = func.metadata.get('kwarg_node_ids', {})
+            
+            # Build argument list
+            args_parts = []
+            
+            # Add positional arguments
+            for arg_node_id in arg_node_ids:
+                # Find the node by ID
+                arg_node = next((n for n in nodes if n.id == arg_node_id), None)
+                if arg_node:
+                    args_parts.append(arg_node.content)
+            
+            # Add keyword arguments
+            for kwarg_name, kwarg_node_id in kwarg_node_ids.items():
+                kwarg_node = next((n for n in nodes if n.id == kwarg_node_id), None)
+                if kwarg_node:
+                    args_parts.append(f"{kwarg_name}={kwarg_node.content}")
+            
+            # If we couldn't reconstruct from metadata, use refs
+            if not args_parts and refs:
+                args_parts = [r.content for r in refs]
+            
+            args_str = ', '.join(args_parts)
+            return f"{func_name}({args_str})"
 
         # Fallback - just join everything
         parts = [n.content for n in nodes]

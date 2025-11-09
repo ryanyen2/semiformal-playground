@@ -18,11 +18,18 @@ from typing import List, Tuple, Optional, Set, Dict, Any
 class IntentNode:
     """Represents a semantic unit in semiformal code"""
     id: str  # Unique node ID (e.g., "node_5_x", "node_7_nl_2")
-    type: str  # 'identifier', 'operator', 'keyword', 'nl_phrase', 'python_expr', 'hole', 'function_call'
+    type: str  # 'identifier', 'operator', 'keyword', 'nl_phrase', 'python_expr', 'hole', 'function_call', 'expr_stmt'
     content: str  # The actual text content
     span: Tuple[int, int]  # Line span in semiformal code (start_line, end_line)
     dependencies: List[str] = field(default_factory=list)  # Node IDs this depends on
     metadata: Dict[str, Any] = field(default_factory=dict)  # Additional metadata
+    # Metadata keys for function_call and expr_stmt:
+    # - 'full_statement': Complete statement code (for reconstruction)
+    # - 'ast_node': Serialized AST for complex expressions
+    # - 'args': List of argument nodes for function calls
+    # - 'kwargs': Dict of keyword argument nodes for function calls
+    # - 'num_args': Number of positional arguments
+    # - 'num_kwargs': Number of keyword arguments
 
 
 class SemiformalParser:
@@ -55,21 +62,50 @@ class SemiformalParser:
                 self._parse_python_statement_node(stmt, line_num)
         except SyntaxError:
             # Fall back to line-by-line parsing for hybrid code
+            # But first, try to identify and parse multiline statements
             lines = code.split('\n')
-
-            for line_num, line in enumerate(lines):
+            i = 0
+            
+            while i < len(lines):
+                line = lines[i]
+                
                 if not line.strip() or line.strip().startswith('#'):
+                    i += 1
                     continue  # Skip empty lines and comments
 
+                # Try to parse this line and accumulate following lines if needed
+                accumulated = line
+                start_line = i
+                
                 # Try parsing as Python first
                 try:
-                    tree = ast.parse(line)
+                    tree = ast.parse(accumulated)
                     # It's valid Python - tokenize it
                     if tree.body:
-                        self._parse_python_statement_node(tree.body[0], line_num)
+                        self._parse_python_statement_node(tree.body[0], start_line)
+                    i += 1
                 except SyntaxError:
-                    # It's NL or hybrid - parse specially
-                    self._parse_nl_statement(line, line_num)
+                    # Check if this might be a multiline statement
+                    # Try accumulating more lines
+                    multiline_parsed = False
+                    
+                    for j in range(i + 1, len(lines)):
+                        accumulated += '\n' + lines[j]
+                        try:
+                            tree = ast.parse(accumulated)
+                            if tree.body:
+                                # Successfully parsed as multiline Python
+                                self._parse_python_statement_node(tree.body[0], start_line)
+                                i = j + 1
+                                multiline_parsed = True
+                                break
+                        except SyntaxError:
+                            continue
+                    
+                    if not multiline_parsed:
+                        # It's NL or hybrid - parse specially
+                        self._parse_nl_statement(line, start_line)
+                        i += 1
 
         # Build dependency graph
         self._compute_dependencies()
@@ -84,10 +120,19 @@ class SemiformalParser:
         if isinstance(stmt, ast.Assign):
             self._parse_assignment(stmt, line_num)
         elif isinstance(stmt, ast.Expr):
-            # Expression statement - store full code and parse
-            expr_node = self._parse_expression(stmt.value, line_num)
-            if expr_node and not expr_node.metadata.get('full_statement'):
-                expr_node.metadata['full_statement'] = full_code
+            # Expression statement (e.g., standalone function call) - store full code
+            expr_node = self._parse_expression(stmt.value, line_num, full_statement=full_code)
+            # Also create an expr_stmt node to capture the complete statement
+            if expr_node and isinstance(stmt.value, (ast.Call, ast.BinOp)):
+                self._create_node(
+                    node_type='expr_stmt',
+                    content=full_code,
+                    line_num=line_num,
+                    metadata={
+                        'full_statement': full_code,
+                        'ast_type': type(stmt.value).__name__
+                    }
+                )
         elif isinstance(stmt, ast.FunctionDef):
             self._parse_function_def(stmt, line_num)
         elif isinstance(stmt, ast.Import) or isinstance(stmt, ast.ImportFrom):
@@ -106,11 +151,23 @@ class SemiformalParser:
             return
 
         stmt = tree.body[0]
+        full_code = ast.unparse(stmt)
 
         if isinstance(stmt, ast.Assign):
             self._parse_assignment(stmt, line_num)
         elif isinstance(stmt, ast.Expr):
-            self._parse_expression(stmt.value, line_num)
+            # Expression statement - use same handling as _parse_python_statement_node
+            expr_node = self._parse_expression(stmt.value, line_num, full_statement=full_code)
+            if expr_node and isinstance(stmt.value, (ast.Call, ast.BinOp)):
+                self._create_node(
+                    node_type='expr_stmt',
+                    content=full_code,
+                    line_num=line_num,
+                    metadata={
+                        'full_statement': full_code,
+                        'ast_type': type(stmt.value).__name__
+                    }
+                )
         elif isinstance(stmt, ast.FunctionDef):
             self._parse_function_def(stmt, line_num)
         elif isinstance(stmt, ast.Import) or isinstance(stmt, ast.ImportFrom):
@@ -161,7 +218,7 @@ class SemiformalParser:
         # Parse value (RHS)
         self._parse_expression(stmt.value, line_num)
 
-    def _parse_expression(self, expr: ast.AST, line_num: int) -> Optional[IntentNode]:
+    def _parse_expression(self, expr: ast.AST, line_num: int, full_statement: str = None) -> Optional[IntentNode]:
         """Parse an expression recursively"""
         if isinstance(expr, ast.Name):
             # Variable reference
@@ -173,20 +230,47 @@ class SemiformalParser:
             )
 
         elif isinstance(expr, ast.Call):
-            # Function call
+            # Function call - capture complete information
+            func_name = None
             if isinstance(expr.func, ast.Name):
-                func_node = self._create_node(
-                    node_type='function_call',
-                    content=expr.func.id,
-                    line_num=line_num,
-                    metadata={'num_args': len(expr.args)}
-                )
+                func_name = expr.func.id
+            elif isinstance(expr.func, ast.Attribute):
+                # Method call like obj.method()
+                func_name = ast.unparse(expr.func)
+            else:
+                func_name = ast.unparse(expr.func)
 
-                # Parse arguments
-                for arg in expr.args:
-                    self._parse_expression(arg, line_num)
+            # Parse positional arguments
+            arg_nodes = []
+            for arg in expr.args:
+                arg_node = self._parse_expression(arg, line_num)
+                if arg_node:
+                    arg_nodes.append(arg_node.id)
 
-                return func_node
+            # Parse keyword arguments
+            kwarg_nodes = {}
+            for keyword in expr.keywords:
+                if keyword.arg:  # Named keyword (not **kwargs)
+                    kwarg_value_node = self._parse_expression(keyword.value, line_num)
+                    if kwarg_value_node:
+                        kwarg_nodes[keyword.arg] = kwarg_value_node.id
+
+            # Create function call node with complete metadata
+            func_node = self._create_node(
+                node_type='function_call',
+                content=func_name,
+                line_num=line_num,
+                metadata={
+                    'num_args': len(expr.args),
+                    'num_kwargs': len(expr.keywords),
+                    'arg_node_ids': arg_nodes,
+                    'kwarg_node_ids': kwarg_nodes,
+                    'full_call': ast.unparse(expr),
+                    'full_statement': full_statement or ast.unparse(expr)
+                }
+            )
+
+            return func_node
 
         elif isinstance(expr, ast.Constant):
             # Literal value
@@ -319,7 +403,7 @@ class SemiformalParser:
             # Natural language expression
             # Segment into semantic units
             nl_tokens = self._segment_nl_phrase(rhs)
-            for i, token in enumerate(nl_tokens):
+            for i, token in enumerate[str](nl_tokens):
                 self._create_node(
                     node_type='nl_phrase',
                     content=token,
