@@ -14,11 +14,9 @@ import {
   nodeDecorationsField,
   nodesStateField,
   cursorMappingStateField,
-  mappingsStateField,
   pythonLineStateField,
   pythonLineDecorationsField,
   updateNodeDecorations,
-  updateMappingDecorations,
   updateCursorMapping,
   updatePythonLineHighlight,
   findNodeAtCursor,
@@ -131,7 +129,6 @@ async function parseCode(semiformalCode: string) {
 
     // Update decorations
     updateNodeDecorations(specEditor, result.nodes)
-    updateMappingDecorations(specEditor, result.mappings)
 
     // Update AST viewer
     astViewer.updateTree(result.nodes, result.mappings)
@@ -184,7 +181,6 @@ async function generateCode() {
 
     // Update decorations
     updateNodeDecorations(specEditor, result.nodes)
-    updateMappingDecorations(specEditor, result.mappings)
 
     // Update AST viewer
     astViewer.updateTree(result.nodes, result.mappings)
@@ -360,7 +356,6 @@ async function init() {
       nodeDecorationsField,
       nodesStateField,
       cursorMappingStateField,
-      mappingsStateField,
       EditorView.updateListener.of((update) => {
         if (update.docChanged) {
           handleSpecChange()
@@ -418,10 +413,6 @@ async function init() {
           length: tokenLength
         })
       }
-    },
-    onNodeHover: (nodeIndex) => {
-      // On hover, could add additional highlighting (optional for now)
-      // For now, hover is handled visually in the AST viewer itself
     }
   })
 

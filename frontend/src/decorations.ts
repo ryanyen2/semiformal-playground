@@ -2,7 +2,7 @@
  * CodeMirror decorations for semiformal programming with node mappings.
  */
 
-import { Decoration, DecorationSet, EditorView, ViewPlugin, ViewUpdate, WidgetType } from '@codemirror/view'
+import { Decoration, DecorationSet, EditorView, WidgetType } from '@codemirror/view'
 import { RangeSetBuilder, StateField, StateEffect } from '@codemirror/state'
 import type { IntentNode, NodeMapping } from './api'
 
@@ -10,8 +10,7 @@ import type { IntentNode, NodeMapping } from './api'
  * State effect to update decorations
  */
 export const updateNodesEffect = StateEffect.define<IntentNode[]>()
-export const updateMappingsEffect = StateEffect.define<NodeMapping[]>()
-export const updateCursorMappingEffect = StateEffect.define<number | null>() // node index
+export const updateCursorMappingEffect = StateEffect.define<number | null>()
 
 /**
  * Create decorations based on intent nodes
@@ -86,57 +85,6 @@ function createNodeDecorations(
 }
 
 /**
- * Gutter marker widget for showing mapping connections
- */
-class MappingMarkerWidget extends WidgetType {
-  constructor(readonly nodeIndex: number) {
-    super()
-  }
-
-  toDOM() {
-    const span = document.createElement('span')
-    span.className = 'cm-mapping-marker'
-    span.title = `Mapped node #${this.nodeIndex}`
-    return span
-  }
-
-  eq(other: MappingMarkerWidget) {
-    return other.nodeIndex === this.nodeIndex
-  }
-}
-
-/**
- * Create gutter decorations for mapped lines
- */
-function createMappingGutterDecorations(
-  doc: { lines: number; line: (n: number) => { from: number; to: number } },
-  mappings: NodeMapping[]
-): DecorationSet {
-  const builder = new RangeSetBuilder<Decoration>()
-
-  for (const mapping of mappings) {
-    const lineNum = mapping.code_line
-
-    if (lineNum < 1 || lineNum > doc.lines) {
-      continue
-    }
-
-    const line = doc.line(lineNum)
-
-    builder.add(
-      line.from,
-      line.from,
-      Decoration.widget({
-        widget: new MappingMarkerWidget(mapping.node_index),
-        side: -1
-      })
-    )
-  }
-
-  return builder.finish()
-}
-
-/**
  * State field for managing node decorations
  */
 export const nodeDecorationsField = StateField.define<DecorationSet>({
@@ -199,42 +147,6 @@ export const cursorMappingStateField = StateField.define<number | null>({
 })
 
 /**
- * State field for storing node mappings
- */
-export const mappingsStateField = StateField.define<NodeMapping[]>({
-  create() {
-    return []
-  },
-  update(mappings, tr) {
-    for (const effect of tr.effects) {
-      if (effect.is(updateMappingsEffect)) {
-        return effect.value
-      }
-    }
-    return mappings
-  }
-})
-
-/**
- * View plugin for managing decoration updates
- */
-export const decorationPlugin = ViewPlugin.fromClass(class {
-  decorations: DecorationSet
-
-  constructor(view: EditorView) {
-    this.decorations = Decoration.none
-  }
-
-  update(update: ViewUpdate) {
-    if (update.docChanged || update.viewportChanged) {
-      // Decorations are managed by state fields
-    }
-  }
-}, {
-  decorations: v => v.decorations
-})
-
-/**
  * Helper to update decorations from outside CodeMirror
  */
 export function updateNodeDecorations(
@@ -243,15 +155,6 @@ export function updateNodeDecorations(
 ) {
   view.dispatch({
     effects: updateNodesEffect.of(nodes)
-  })
-}
-
-export function updateMappingDecorations(
-  view: EditorView,
-  mappings: NodeMapping[]
-) {
-  view.dispatch({
-    effects: updateMappingsEffect.of(mappings)
   })
 }
 

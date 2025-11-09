@@ -16,7 +16,6 @@ import type { IntentNode, NodeMapping } from './api'
 
 interface TreeNodeState {
   expanded: boolean
-  highlighted: boolean
 }
 
 export class ASTViewer {
@@ -26,9 +25,8 @@ export class ASTViewer {
   private nodeStates: Map<number, TreeNodeState> = new Map()
   private selectedNodeIndex: number | null = null
 
-  // Callbacks for interactions
+  // Callback for interactions
   private onNodeClick?: (nodeIndex: number) => void
-  private onNodeHover?: (nodeIndex: number | null) => void
 
   constructor(container: HTMLElement) {
     this.container = container
@@ -45,7 +43,7 @@ export class ASTViewer {
     // Initialize node states if needed
     for (let i = 0; i < nodes.length; i++) {
       if (!this.nodeStates.has(i)) {
-        this.nodeStates.set(i, { expanded: false, highlighted: false })
+        this.nodeStates.set(i, { expanded: false })
       }
     }
 
@@ -84,10 +82,8 @@ export class ASTViewer {
    */
   setCallbacks(callbacks: {
     onNodeClick?: (nodeIndex: number) => void
-    onNodeHover?: (nodeIndex: number | null) => void
   }) {
     this.onNodeClick = callbacks.onNodeClick
-    this.onNodeHover = callbacks.onNodeHover
   }
 
   /**
@@ -143,7 +139,7 @@ export class ASTViewer {
 
     // Check if any node in this line is selected
     const hasSelection = nodeIndices.some(idx => idx === this.selectedNodeIndex)
-    const groupState = this.nodeStates.get(nodeIndices[0]) || { expanded: false, highlighted: false }
+    const groupState = this.nodeStates.get(nodeIndices[0]) || { expanded: false }
     const isExpanded = groupState.expanded || hasSelection
 
     // Line header
@@ -192,7 +188,7 @@ export class ASTViewer {
    */
   private createNodeElement(nodeIndex: number): HTMLElement {
     const node = this.nodes[nodeIndex]
-    const state = this.nodeStates.get(nodeIndex) || { expanded: false, highlighted: false }
+    const state = this.nodeStates.get(nodeIndex) || { expanded: false }
     const isSelected = nodeIndex === this.selectedNodeIndex
 
     const nodeEl = document.createElement('div')
@@ -251,19 +247,6 @@ export class ASTViewer {
 
       if (this.onNodeClick) {
         this.onNodeClick(nodeIndex)
-      }
-    }
-
-    // Hover handlers
-    nodeEl.onmouseenter = () => {
-      if (this.onNodeHover) {
-        this.onNodeHover(nodeIndex)
-      }
-    }
-
-    nodeEl.onmouseleave = () => {
-      if (this.onNodeHover) {
-        this.onNodeHover(null)
       }
     }
 
