@@ -25,6 +25,7 @@ import {
   findMappingForNode
 } from './decorations'
 import { api, IntentNode, NodeMapping } from './api'
+import { ASTViewer } from './ast-viewer'
 
 // Initial example code
 const EXAMPLE_SPEC = `# Semiformal Python Example
@@ -47,6 +48,7 @@ print(output)
 // Application state
 let specEditor: EditorView
 let codeEditor: EditorView
+let astViewer: ASTViewer
 let parseTimeout: number | null = null
 let isGenerating = false
 let isParsing = false
@@ -131,6 +133,9 @@ async function parseCode(semiformalCode: string) {
     updateNodeDecorations(specEditor, result.nodes)
     updateMappingDecorations(specEditor, result.mappings)
 
+    // Update AST viewer
+    astViewer.updateTree(result.nodes, result.mappings)
+
     // Update UI
     setNodeCount(result.nodes.length)
     setSpecStatus('Parsed', '')
@@ -180,6 +185,9 @@ async function generateCode() {
     // Update decorations
     updateNodeDecorations(specEditor, result.nodes)
     updateMappingDecorations(specEditor, result.mappings)
+
+    // Update AST viewer
+    astViewer.updateTree(result.nodes, result.mappings)
 
     // Update UI
     setCodeStatus('Generated', '')
@@ -290,9 +298,13 @@ function handleCursorMove(view: EditorView) {
       // Clear Python line highlight if no mapping
       updatePythonLineHighlight(codeEditor, null)
     }
+
+    // Expand AST viewer to show this node
+    astViewer.expandToNode(nodeIndex)
   } else {
     // Clear Python line highlight if no node
     updatePythonLineHighlight(codeEditor, null)
+    astViewer.clearSelection()
   }
 }
 
@@ -377,6 +389,41 @@ async function init() {
     ],
     false
   )
+
+  // Create AST viewer
+  const astViewerContainer = document.getElementById('ast-viewer')
+  if (!astViewerContainer) {
+    console.error('AST viewer container not found')
+    return
+  }
+
+  astViewer = new ASTViewer(astViewerContainer)
+
+  // Set up AST viewer callbacks
+  astViewer.setCallbacks({
+    onNodeClick: (nodeIndex) => {
+      // When clicking a node in the tree, highlight it in both editors
+      const node = currentNodes[nodeIndex]
+      const mapping = findMappingForNode(currentMappings, nodeIndex)
+
+      // Highlight in spec editor
+      updateCursorMapping(specEditor, nodeIndex)
+
+      // Highlight in Python editor
+      if (mapping) {
+        const tokenLength = calculateTokenLength(node, mapping)
+        updatePythonLineHighlight(codeEditor, {
+          line: mapping.code_line,
+          col: mapping.code_col,
+          length: tokenLength
+        })
+      }
+    },
+    onNodeHover: (nodeIndex) => {
+      // On hover, could add additional highlighting (optional for now)
+      // For now, hover is handled visually in the AST viewer itself
+    }
+  })
 
   // Add Cmd+S / Ctrl+S handler
   document.addEventListener('keydown', (e) => {

@@ -247,6 +247,253 @@
       height: 1rem;
       background: #3e3e42;
     }
+
+    /* AST Viewer */
+    .ast-viewer-container {
+      width: 320px;
+      display: flex;
+      flex-direction: column;
+      border-left: 1px solid #3e3e42;
+      background: #1e1e1e;
+      overflow: hidden;
+    }
+
+    .ast-viewer-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      padding: 0.5rem 1rem;
+      background: #252526;
+      border-bottom: 1px solid #3e3e42;
+      flex-shrink: 0;
+    }
+
+    .ast-viewer-title {
+      font-size: 0.8rem;
+      font-weight: 600;
+      color: #cccccc;
+    }
+
+    .ast-viewer-wrapper {
+      flex: 1;
+      overflow-y: auto;
+      overflow-x: hidden;
+      padding: 0.5rem;
+    }
+
+    .ast-tree {
+      font-size: 0.75rem;
+      font-family: 'Fira Code', 'Consolas', 'Monaco', monospace;
+    }
+
+    .ast-empty {
+      color: #858585;
+      font-style: italic;
+      padding: 1rem;
+      text-align: center;
+    }
+
+    .ast-line-group {
+      margin-bottom: 0.75rem;
+    }
+
+    .ast-line-header {
+      display: flex;
+      align-items: center;
+      gap: 0.5rem;
+      padding: 0.25rem 0.5rem;
+      background: #252526;
+      border-radius: 3px;
+      cursor: pointer;
+      user-select: none;
+    }
+
+    .ast-line-header:hover {
+      background: #2d2d30;
+    }
+
+    .ast-line-label {
+      color: #858585;
+      font-weight: 600;
+    }
+
+    .ast-node-count {
+      color: #6a9955;
+      font-size: 0.7rem;
+      margin-left: auto;
+    }
+
+    .ast-toggle {
+      width: 1rem;
+      height: 1rem;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      color: #858585;
+      font-weight: bold;
+      cursor: pointer;
+      user-select: none;
+    }
+
+    .ast-toggle:hover {
+      color: #cccccc;
+    }
+
+    .ast-toggle-small {
+      width: 0.85rem;
+      height: 0.85rem;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      color: #858585;
+      font-size: 0.7rem;
+      font-weight: bold;
+      cursor: pointer;
+      user-select: none;
+      margin-right: 0.25rem;
+    }
+
+    .ast-toggle-small:hover {
+      color: #cccccc;
+    }
+
+    .ast-nodes-container {
+      padding-left: 1rem;
+      margin-top: 0.25rem;
+    }
+
+    .ast-node {
+      padding: 0.35rem 0.5rem;
+      margin: 0.15rem 0;
+      border-left: 2px solid transparent;
+      border-radius: 3px;
+      cursor: pointer;
+      transition: all 0.15s ease;
+    }
+
+    .ast-node:hover {
+      background: rgba(82, 139, 255, 0.1);
+      border-left-color: #528bff;
+    }
+
+    .ast-node-selected {
+      background: rgba(82, 139, 255, 0.2);
+      border-left-color: #528bff;
+    }
+
+    .ast-node-header {
+      display: flex;
+      align-items: center;
+      gap: 0.35rem;
+      flex-wrap: wrap;
+    }
+
+    .ast-node-type {
+      font-weight: 600;
+      padding: 0.1rem 0.35rem;
+      border-radius: 2px;
+      font-size: 0.7rem;
+    }
+
+    /* Node type colors */
+    .ast-type-identifier {
+      color: #9cdcfe;
+      background: rgba(156, 220, 254, 0.15);
+    }
+
+    .ast-type-nl_phrase {
+      color: #6a9955;
+      background: rgba(106, 153, 85, 0.15);
+    }
+
+    .ast-type-nl_text {
+      color: #6a9955;
+      background: rgba(106, 153, 85, 0.15);
+    }
+
+    .ast-type-function_call {
+      color: #dcdcaa;
+      background: rgba(220, 220, 170, 0.15);
+    }
+
+    .ast-type-operator {
+      color: #d4d4d4;
+      background: rgba(212, 212, 212, 0.15);
+    }
+
+    .ast-type-literal {
+      color: #ce9178;
+      background: rgba(206, 145, 120, 0.15);
+    }
+
+    .ast-type-hole {
+      color: #ffcb6b;
+      background: rgba(255, 203, 107, 0.15);
+    }
+
+    .ast-type-hole_hint {
+      color: #c586c0;
+      background: rgba(197, 134, 192, 0.15);
+    }
+
+    .ast-type-hole_empty {
+      color: #ffcb6b;
+      background: rgba(255, 203, 107, 0.15);
+    }
+
+    .ast-type-placeholder {
+      color: #4ec9b0;
+      background: rgba(78, 201, 176, 0.15);
+    }
+
+    .ast-node-value {
+      color: #d4d4d4;
+      word-break: break-word;
+    }
+
+    .ast-node-pos {
+      color: #858585;
+      font-size: 0.65rem;
+      margin-left: auto;
+    }
+
+    .ast-metadata {
+      margin-top: 0.25rem;
+      padding-left: 1rem;
+      border-left: 1px solid #3e3e42;
+    }
+
+    .ast-metadata-item {
+      padding: 0.15rem 0;
+      color: #858585;
+      font-size: 0.7rem;
+    }
+
+    .ast-metadata-key {
+      color: #9cdcfe;
+    }
+
+    .ast-metadata-value {
+      color: #ce9178;
+    }
+
+    /* Scrollbar styling for AST viewer */
+    .ast-viewer-wrapper::-webkit-scrollbar {
+      width: 8px;
+    }
+
+    .ast-viewer-wrapper::-webkit-scrollbar-track {
+      background: #1e1e1e;
+    }
+
+    .ast-viewer-wrapper::-webkit-scrollbar-thumb {
+      background: #424242;
+      border-radius: 4px;
+    }
+
+    .ast-viewer-wrapper::-webkit-scrollbar-thumb:hover {
+      background: #4e4e4e;
+    }
   </style>
 </head>
 <body>
@@ -284,6 +531,12 @@
         <div class="editor-wrapper">
           <div id="code-editor"></div>
         </div>
+      </div>
+      <div class="ast-viewer-container">
+        <div class="ast-viewer-header">
+          <span class="ast-viewer-title">IR Tree</span>
+        </div>
+        <div class="ast-viewer-wrapper" id="ast-viewer"></div>
       </div>
     </main>
     <div id="status-bar" class="status-bar">
