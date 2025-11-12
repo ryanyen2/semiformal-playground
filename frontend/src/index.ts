@@ -26,19 +26,11 @@ import { api, IntentNode, NodeMapping } from './api'
 import { ASTViewer } from './ast-viewer'
 
 // Initial example code
-const EXAMPLE_SPEC = `# Semiformal Python Example
-# Type to parse automatically (debounced)
-# Press Cmd+S to generate Python code
+const EXAMPLE_SPEC = `result = load the dataset and process it
 
-# Example 1: Natural language
-result = load the dataset and process it
-
-# Example 2: Function call
 output = transform(result)
 
-# Example 3: Hole syntax
-x = {}
-y = {split data into train and test}
+x, y = {split data into train and test}
 
 print(output)
 `
