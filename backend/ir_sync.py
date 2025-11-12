@@ -5,6 +5,7 @@ This module implements robust synchronization using the shared IR
 and get/put transformations instead of ad-hoc rule-based approaches.
 """
 
+import ast
 from typing import Dict, List, Optional, Tuple, Any
 from dataclasses import dataclass
 from enum import Enum
@@ -40,9 +41,9 @@ class IRSync:
     based on the lens laws.
     """
     
-    def __init__(self):
+    def __init__(self, use_llm: bool = True):
         self.ir: Optional[ProgramIR] = None
-        self.generator = DiffGenerator()
+        self.generator = DiffGenerator() if use_llm else None
         self.mapper = ASTMapper()
         self.differ = TreeDiffer()
         self.transformer = StructuralTransformer(self.mapper)
@@ -106,12 +107,18 @@ class IRSync:
         """
         # First, do merge and structural transformations
         self.merge_and_transform(new_spec)
-        
-        # Then apply LLM generation for incomplete nodes
-        generated_code, diffs = self.generator.generate_from_ir(self.ir)
-        
+
+        # Then apply LLM generation for incomplete nodes (if generator available)
+        if self.generator:
+            generated_code, diffs = self.generator.generate_from_ir(self.ir)
+        else:
+            # No LLM available - just return skeleton
+            from skeleton_generator import generate_skeleton
+            generated_code = generate_skeleton(self.ir)
+            diffs = []
+
         affected_node_ids = [node.id for node in self.ir.get_incomplete_nodes()]
-        
+
         return SyncResult(
             updated_source=generated_code,
             diffs=diffs,
@@ -164,39 +171,94 @@ class IRSync:
     ) -> SyncResult:
         """
         Synchronize code changes back to spec (PUT transformation).
-        
+
+        Strategy:
+        1. Parse both old and new code to AST
+        2. Detect what changed at AST level
+        3. Update IR nodes with new code
+        4. Mark nodes as USER_EDITED
+        5. Optionally update spec text for synced nodes
+
         Args:
             spec: Current spec source
             old_code: Previous generated code
             new_code: Updated code
-        
+
         Returns:
             SyncResult with updated spec
         """
-        # Parse spec to get IR
+        import ast as ast_module
+
+        # Parse spec to get IR if not already loaded
         if not self.ir:
             self.ir = parse_semiformal(spec)
-        
-        # Detect code changes
-        changes = self._detect_code_changes(old_code, new_code)
-        
-        # Apply put transformation
-        code_changes = {}
+
+        # Parse old and new code
+        try:
+            old_ast = ast_module.parse(old_code)
+            new_ast = ast_module.parse(new_code)
+        except SyntaxError as e:
+            return SyncResult(
+                updated_source=spec,
+                diffs=[],
+                affected_nodes=[],
+                needs_regeneration=False,
+                message=f"Code syntax error: {e}",
+                ir=self.ir
+            )
+
+        # Detect code changes at AST level
+        code_changes = self._detect_code_changes_ast(old_ast, new_ast)
+
+        # Apply changes to IR
         affected_nodes = []
-        
-        for node_id, new_text in changes.items():
-            node = self.ir.get_node(node_id)
+        updated_spec_lines = spec.split('\n')
+
+        for change_info in code_changes:
+            node = self._find_node_by_code(change_info)
             if node:
-                code_changes[node_id] = new_text
-                affected_nodes.append(node_id)
-        
-        updated_spec = self.ir.apply_put(code_changes)
-        
-        # Generate diffs
-        from diff_generator import DiffGenerator
-        gen = DiffGenerator()
-        diffs = gen._create_diffs(spec, updated_spec)
-        
+                # Update node with new code
+                node.code_text = change_info['new_text']
+                node.status = NodeStatus.USER_EDITED
+                affected_nodes.append(node.id)
+
+                # Important: Also update metadata to track LHS for future diffs
+                # Extract LHS from new code
+                if '=' in change_info['new_text']:
+                    lhs_part = change_info['new_text'].split('=')[0].strip()
+                    # Parse LHS to get variable names
+                    lhs_vars = [v.strip() for v in lhs_part.replace('(', '').replace(')', '').split(',')]
+                    node.metadata['lhs'] = lhs_vars
+
+                # For SYNCED nodes, also update spec text
+                # For NL/INCOMPLETE nodes, just mark as user-edited
+                if change_info['type'] == 'assignment' and node.node_type == NodeType.VARIABLE_ASSIGN:
+                    # Update spec to reflect new code (if it was synced)
+                    if node.spec_location and node.status == NodeStatus.SYNCED:
+                        line_idx = node.spec_location.line - 1
+                        if 0 <= line_idx < len(updated_spec_lines):
+                            # Keep the variable name, update to show it's now concrete Python
+                            updated_spec_lines[line_idx] = change_info['new_text']
+
+        updated_spec = '\n'.join(updated_spec_lines)
+
+        # Generate diffs (simple text diff)
+        diffs = []
+        if updated_spec != spec:
+            import difflib
+            diff_lines = list(difflib.unified_diff(
+                spec.splitlines(keepends=True),
+                updated_spec.splitlines(keepends=True),
+                fromfile='spec_before',
+                tofile='spec_after'
+            ))
+            # Simple diff representation
+            diffs = [{
+                'old_file': 'spec',
+                'new_file': 'spec',
+                'diff_text': ''.join(diff_lines)
+            }]
+
         return SyncResult(
             updated_source=updated_spec,
             diffs=diffs,
@@ -294,42 +356,154 @@ class IRSync:
         
         return changes
     
+    def _detect_code_changes_ast(
+        self,
+        old_ast: ast.Module,
+        new_ast: ast.Module
+    ) -> List[Dict[str, Any]]:
+        """
+        Detect changes between old and new code AST.
+
+        Returns list of change dictionaries with:
+        - type: 'assignment', 'function', etc.
+        - name: element name
+        - old_text: old code
+        - new_text: new code
+        """
+        import ast as ast_module
+        changes = []
+
+        # Build mappings of old and new statements
+        old_stmts = self._index_ast_statements(old_ast)
+        new_stmts = self._index_ast_statements(new_ast)
+
+        # Find changes by comparing statements
+        all_names = set(old_stmts.keys()) | set(new_stmts.keys())
+
+        for name in all_names:
+            old_stmt = old_stmts.get(name)
+            new_stmt = new_stmts.get(name)
+
+            if old_stmt and not new_stmt:
+                # Removed
+                changes.append({
+                    'type': self._get_stmt_type(old_stmt),
+                    'name': name,
+                    'old_text': ast_module.unparse(old_stmt),
+                    'new_text': '',
+                    'change': 'removed'
+                })
+            elif new_stmt and not old_stmt:
+                # Added
+                changes.append({
+                    'type': self._get_stmt_type(new_stmt),
+                    'name': name,
+                    'old_text': '',
+                    'new_text': ast_module.unparse(new_stmt),
+                    'change': 'added'
+                })
+            elif old_stmt and new_stmt:
+                # Compare
+                old_text = ast_module.unparse(old_stmt)
+                new_text = ast_module.unparse(new_stmt)
+                if old_text != new_text:
+                    changes.append({
+                        'type': self._get_stmt_type(new_stmt),
+                        'name': name,
+                        'old_text': old_text,
+                        'new_text': new_text,
+                        'change': 'modified'
+                    })
+
+        return changes
+
+    def _index_ast_statements(self, tree: ast.Module) -> Dict[str, ast.AST]:
+        """Index statements by name for comparison."""
+        import ast as ast_module
+        index = {}
+
+        for stmt in tree.body:
+            if isinstance(stmt, ast_module.FunctionDef):
+                index[stmt.name] = stmt
+            elif isinstance(stmt, ast_module.Assign):
+                # Get target name
+                if stmt.targets and isinstance(stmt.targets[0], ast_module.Name):
+                    index[stmt.targets[0].id] = stmt
+                elif stmt.targets and isinstance(stmt.targets[0], ast_module.Tuple):
+                    # Multi-target assignment - use first var
+                    if stmt.targets[0].elts and isinstance(stmt.targets[0].elts[0], ast_module.Name):
+                        index[stmt.targets[0].elts[0].id] = stmt
+
+        return index
+
+    def _get_stmt_type(self, stmt: ast.AST) -> str:
+        """Get statement type as string."""
+        import ast as ast_module
+        if isinstance(stmt, ast_module.FunctionDef):
+            return 'function'
+        elif isinstance(stmt, ast_module.Assign):
+            return 'assignment'
+        elif isinstance(stmt, ast_module.Expr):
+            return 'expression'
+        return 'unknown'
+
+    def _find_node_by_code(self, change_info: Dict[str, Any]) -> Optional[IRNode]:
+        """Find IR node corresponding to code change."""
+        if not self.ir:
+            return None
+
+        name = change_info['name']
+        change_type = change_info['type']
+
+        # Search for node by name and type
+        for node in self.ir.nodes.values():
+            if node.name == name:
+                if change_type == 'function' and node.node_type == NodeType.FUNCTION_DEF:
+                    return node
+                elif change_type == 'assignment' and node.node_type in (
+                    NodeType.VARIABLE_ASSIGN,
+                    NodeType.NL_EXPRESSION
+                ):
+                    return node
+
+        return None
+
     def _detect_code_changes(
         self,
         old_code: str,
         new_code: str
     ) -> Dict[str, str]:
         """
-        Detect changes in code and map to nodes.
-        
+        Detect changes in code and map to nodes (legacy method).
+
         Returns a dictionary mapping node IDs to new code text.
         """
         changes = {}
-        
+
         if not self.ir:
             return changes
-        
+
         # Parse new code to extract implementations
         new_lines = new_code.split('\n')
-        
+
         for node_id, node in self.ir.nodes.items():
             if not node.code_location:
                 continue
-            
+
             # Extract node's code from new_code
             start_line = node.code_location.line - 1
             end_line = node.code_location.end_line or start_line
-            
+
             if start_line < len(new_lines):
                 if end_line < len(new_lines):
                     new_text = '\n'.join(new_lines[start_line:end_line + 1])
                 else:
                     new_text = new_lines[start_line]
-                
+
                 # Check if changed
                 if new_text != node.code_text:
                     changes[node_id] = new_text
-        
+
         return changes
     
     def get_ir(self) -> Optional[ProgramIR]:
