@@ -103,7 +103,7 @@ class TreeMapper:
         2. Build hierarchy based on containment and dependencies
         3. Normalize to common tree representation
         """
-        from mvp_parser import IntentNode
+        from parser import IntentNode
         
         if not intent_nodes:
             return TreeNode(node_type='module', content='<root>')
@@ -131,7 +131,7 @@ class TreeMapper:
     
     def _build_statement_node(self, nodes: List, line_num: int) -> Optional[TreeNode]:
         """Build a statement-level tree node from intent nodes"""
-        from mvp_parser import IntentNode
+        from parser import IntentNode
         
         if not nodes:
             return None
@@ -924,7 +924,7 @@ class MappingAdapter:
         Returns:
             List of Mapping objects compatible with existing system
         """
-        from mvp_generator import Mapping, CodeSlice
+        from generator import Mapping, CodeSlice
         
         code_lines = generated_code.split('\n')
         result_mappings = []
@@ -1003,7 +1003,7 @@ class MappingAdapter:
         Returns:
             List of IntentNode objects found in the subtree
         """
-        from mvp_parser import IntentNode
+        from parser import IntentNode
         
         intent_nodes = []
         

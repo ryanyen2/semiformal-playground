@@ -10,7 +10,7 @@ import os
 from dataclasses import dataclass, field
 from typing import List, Dict, Set, Optional, Tuple, Any
 
-from mvp_parser import IntentNode
+from parser import IntentNode
 
 
 @dataclass

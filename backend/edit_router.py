@@ -9,9 +9,9 @@ Translates edits between semiformal and Python using:
 
 from dataclasses import dataclass
 from typing import List, Optional, Tuple
-from mvp_edit import DirectEditOperations, EditResult
-from mvp_generator import CodeGenerator, Mapping
-from mvp_config import MVPConfig, DEFAULT_CONFIG
+from edit_operations import DirectEditOperations, EditResult
+from generator import CodeGenerator, Mapping
+from config import MVPConfig, DEFAULT_CONFIG
 
 
 @dataclass

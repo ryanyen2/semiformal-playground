@@ -10,7 +10,7 @@ import os
 from dataclasses import dataclass
 from typing import Optional, List, Dict, Tuple
 
-from mvp_edit import DirectEditOperations, EditResult
+from edit_operations import DirectEditOperations, EditResult
 
 
 @dataclass

@@ -1,271 +1,569 @@
 """
-AST-based parser for incomplete Python code.
+MVP Parser for Semiformal Python Code
 
-This module identifies:
-- Function calls without declarations
-- Variables without assignments
-- Natural language expressions (NL text)
+Implements fine-grained parsing into intent nodes with support for:
+- Pure Python statements
+- Natural language assignments
+- Hole syntax: {} and {hint}
+- Dependency tracking
 """
 
 import ast
 import re
-from typing import List, Dict, Any, Set
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from typing import List, Tuple, Optional, Set, Dict, Any
 
 
 @dataclass
-class IncompletePart:
-    """Represents an incomplete part of the code."""
-    type: str  # 'function', 'variable', 'nl_text'
-    name: str
-    line: int
-    col: int
-    context: str  # surrounding code context
-    value: str = ""  # for NL text or partial expressions
+class IntentNode:
+    """Represents a semantic unit in semiformal code"""
+    id: str  # Unique node ID (e.g., "node_5_x", "node_7_nl_2")
+    type: str  # 'identifier', 'operator', 'keyword', 'nl_phrase', 'python_expr', 'hole', 'function_call', 'expr_stmt'
+    content: str  # The actual text content
+    span: Tuple[int, int]  # Line span in semiformal code (start_line, end_line)
+    dependencies: List[str] = field(default_factory=list)  # Node IDs this depends on
+    metadata: Dict[str, Any] = field(default_factory=dict)  # Additional metadata
+    # Metadata keys for function_call and expr_stmt:
+    # - 'full_statement': Complete statement code (for reconstruction)
+    # - 'ast_node': Serialized AST for complex expressions
+    # - 'args': List of argument nodes for function calls
+    # - 'kwargs': Dict of keyword argument nodes for function calls
+    # - 'num_args': Number of positional arguments
+    # - 'num_kwargs': Number of keyword arguments
 
 
-@dataclass
-class StubDeclaration:
-    """Represents a stub declaration to be created."""
-    type: str  # 'function', 'variable'
-    name: str
-    insert_line: int
-    code: str  # the stub code to insert
-    original_line: int  # where the incomplete part was found
-
-
-class IncompletePythonParser:
-    """Parser for identifying incomplete Python code."""
+class SemiformalParser:
+    """Parse semiformal code into intent nodes"""
 
     def __init__(self):
-        self.defined_functions: Set[str] = set()
-        self.defined_variables: Set[str] = set()
-        self.incomplete_parts: List[IncompletePart] = []
-        self.stubs: List[StubDeclaration] = []
+        self.nodes: List[IntentNode] = []
+        self.defined_vars: Set[str] = set()
+        self.defined_funcs: Set[str] = set()
+        self.node_counter = 0
 
-    def parse(self, code: str) -> Dict[str, Any]:
+    def parse(self, code: str) -> List[IntentNode]:
         """
-        Parse code and identify incomplete parts.
+        Parse semiformal code into intent nodes.
 
         Returns:
-            Dict containing:
-            - incomplete_parts: List of IncompletePart
-            - stubs: List of StubDeclaration to create
-            - annotated_code: Code with stubs inserted
+            List of IntentNode objects
         """
-        self.incomplete_parts = []
-        self.stubs = []
-        self.defined_functions = set()
-        self.defined_variables = set()
+        self.nodes = []
+        self.defined_vars = set()
+        self.defined_funcs = set()
+        self.node_counter = 0
 
-        # First pass: identify what's already defined
-        self._collect_definitions(code)
-
-        # Second pass: find incomplete parts
-        self._find_incomplete_parts(code)
-
-        # Generate stubs for incomplete parts
-        self._generate_stubs()
-
-        # Create annotated code with stubs
-        annotated_code = self._insert_stubs(code)
-
-        return {
-            'incomplete_parts': [
-                {
-                    'type': part.type,
-                    'name': part.name,
-                    'line': part.line,
-                    'col': part.col,
-                    'context': part.context,
-                    'value': part.value
-                }
-                for part in self.incomplete_parts
-            ],
-            'stubs': [
-                {
-                    'type': stub.type,
-                    'name': stub.name,
-                    'insert_line': stub.insert_line,
-                    'code': stub.code,
-                    'original_line': stub.original_line
-                }
-                for stub in self.stubs
-            ],
-            'annotated_code': annotated_code
-        }
-
-    def _collect_definitions(self, code: str):
-        """Collect already defined functions and variables."""
+        # First, try to parse the entire code as Python
         try:
             tree = ast.parse(code)
-            for node in ast.walk(tree):
-                if isinstance(node, ast.FunctionDef):
-                    self.defined_functions.add(node.name)
-                elif isinstance(node, ast.Assign):
-                    for target in node.targets:
-                        if isinstance(target, ast.Name):
-                            self.defined_variables.add(target.id)
+            # It's valid Python - parse it
+            for stmt in tree.body:
+                line_num = getattr(stmt, 'lineno', 1) - 1
+                self._parse_python_statement_node(stmt, line_num)
         except SyntaxError:
-            # If code doesn't parse, try line by line
-            for line_num, line in enumerate(code.split('\n'), 1):
-                # Try to identify function definitions
-                func_match = re.match(r'^\s*def\s+(\w+)', line)
-                if func_match:
-                    self.defined_functions.add(func_match.group(1))
+            # Fall back to line-by-line parsing for hybrid code
+            # But first, try to identify and parse multiline statements
+            lines = code.split('\n')
+            i = 0
+            
+            while i < len(lines):
+                line = lines[i]
+                
+                if not line.strip() or line.strip().startswith('#'):
+                    i += 1
+                    continue  # Skip empty lines and comments
 
-                # Try to identify variable assignments
-                var_match = re.match(r'^\s*(\w+)\s*=', line)
-                if var_match:
-                    self.defined_variables.add(var_match.group(1))
+                # Try to parse this line and accumulate following lines if needed
+                accumulated = line
+                start_line = i
+                
+                # Try parsing as Python first
+                try:
+                    tree = ast.parse(accumulated)
+                    # It's valid Python - tokenize it
+                    if tree.body:
+                        self._parse_python_statement_node(tree.body[0], start_line)
+                    i += 1
+                except SyntaxError:
+                    # Check if this might be a multiline statement
+                    # Try accumulating more lines
+                    multiline_parsed = False
+                    
+                    for j in range(i + 1, len(lines)):
+                        accumulated += '\n' + lines[j]
+                        try:
+                            tree = ast.parse(accumulated)
+                            if tree.body:
+                                # Successfully parsed as multiline Python
+                                self._parse_python_statement_node(tree.body[0], start_line)
+                                i = j + 1
+                                multiline_parsed = True
+                                break
+                        except SyntaxError:
+                            continue
+                    
+                    if not multiline_parsed:
+                        # It's NL or hybrid - parse specially
+                        self._parse_nl_statement(line, start_line)
+                        i += 1
 
-    def _find_incomplete_parts(self, code: str):
-        """Find incomplete parts in the code."""
-        lines = code.split('\n')
+        # Build dependency graph
+        self._compute_dependencies()
 
-        for line_num, line in enumerate(lines, 1):
-            # Check for function calls without definitions
-            func_calls = re.findall(r'(\w+)\s*\(', line)
-            for func_name in func_calls:
-                if (func_name not in self.defined_functions and
-                    func_name not in __builtins__ and
-                    not func_name.startswith('_')):
-                    self.incomplete_parts.append(IncompletePart(
-                        type='function',
-                        name=func_name,
-                        line=line_num,
-                        col=line.index(func_name),
-                        context=line.strip()
-                    ))
+        return self.nodes
 
-            # Check for variables without assignments (= ...)
-            var_ellipsis = re.match(r'^\s*(\w+)\s*=\s*\.\.\.', line)
-            if var_ellipsis:
-                var_name = var_ellipsis.group(1)
-                self.incomplete_parts.append(IncompletePart(
-                    type='variable',
-                    name=var_name,
-                    line=line_num,
-                    col=0,
-                    context=line.strip(),
-                    value='...'
-                ))
+    def _parse_python_statement_node(self, stmt: ast.AST, line_num: int):
+        """Parse a Python AST statement node"""
+        # Store the full statement code for later reconstruction
+        full_code = ast.unparse(stmt)
 
-            # Check for NL text (natural language in assignments)
-            nl_match = re.match(r'^\s*(\w+)\s*=\s*([^=\n]+[a-zA-Z\s]{3,}.*)', line)
-            if nl_match and not re.search(r'["\']', line) and '...' not in line:
-                var_name = nl_match.group(1)
-                nl_text = nl_match.group(2).strip()
-                # Check if it looks like NL (contains spaces and letters)
-                if ' ' in nl_text and not nl_text.startswith('('):
-                    self.incomplete_parts.append(IncompletePart(
-                        type='nl_text',
-                        name=var_name,
-                        line=line_num,
-                        col=0,
-                        context=line.strip(),
-                        value=nl_text
-                    ))
+        if isinstance(stmt, ast.Assign):
+            self._parse_assignment(stmt, line_num)
+        elif isinstance(stmt, ast.Expr):
+            # Expression statement (e.g., standalone function call) - store full code
+            expr_node = self._parse_expression(stmt.value, line_num, full_statement=full_code)
+            # Also create an expr_stmt node to capture the complete statement
+            if expr_node and isinstance(stmt.value, (ast.Call, ast.BinOp)):
+                self._create_node(
+                    node_type='expr_stmt',
+                    content=full_code,
+                    line_num=line_num,
+                    metadata={
+                        'full_statement': full_code,
+                        'ast_type': type(stmt.value).__name__
+                    }
+                )
+        elif isinstance(stmt, ast.FunctionDef):
+            self._parse_function_def(stmt, line_num)
+        elif isinstance(stmt, ast.Import) or isinstance(stmt, ast.ImportFrom):
+            self._parse_import(stmt, line_num)
+        else:
+            # Generic statement - use ast.unparse
+            self._create_node(
+                node_type='python_stmt',
+                content=full_code,
+                line_num=line_num
+            )
 
-    def _generate_stubs(self):
-        """Generate stub declarations for incomplete parts."""
-        # Group incomplete parts by type
-        functions_needed = {}
-        variables_needed = {}
+    def _parse_python_statement(self, tree: ast.AST, line: str, line_num: int):
+        """Parse a valid Python statement into nodes"""
+        if not tree.body:
+            return
 
-        for part in self.incomplete_parts:
-            if part.type == 'function':
-                if part.name not in functions_needed:
-                    functions_needed[part.name] = part
-            elif part.type in ('variable', 'nl_text'):
-                if part.name not in variables_needed:
-                    variables_needed[part.name] = part
+        stmt = tree.body[0]
+        full_code = ast.unparse(stmt)
 
-        # Create function stubs
-        for func_name, part in functions_needed.items():
-            # Try to infer parameters from usage
-            params = self._infer_function_params(part.context, func_name)
-            stub_code = f"def {func_name}({', '.join(params)}):\n    ..."
+        if isinstance(stmt, ast.Assign):
+            self._parse_assignment(stmt, line_num)
+        elif isinstance(stmt, ast.Expr):
+            # Expression statement - use same handling as _parse_python_statement_node
+            expr_node = self._parse_expression(stmt.value, line_num, full_statement=full_code)
+            if expr_node and isinstance(stmt.value, (ast.Call, ast.BinOp)):
+                self._create_node(
+                    node_type='expr_stmt',
+                    content=full_code,
+                    line_num=line_num,
+                    metadata={
+                        'full_statement': full_code,
+                        'ast_type': type(stmt.value).__name__
+                    }
+                )
+        elif isinstance(stmt, ast.FunctionDef):
+            self._parse_function_def(stmt, line_num)
+        elif isinstance(stmt, ast.Import) or isinstance(stmt, ast.ImportFrom):
+            self._parse_import(stmt, line_num)
+        else:
+            # Generic statement
+            self._create_node(
+                node_type='python_stmt',
+                content=line.strip(),
+                line_num=line_num
+            )
 
-            self.stubs.append(StubDeclaration(
-                type='function',
-                name=func_name,
-                insert_line=part.line - 1,  # Insert before usage
-                code=stub_code,
-                original_line=part.line
-            ))
+    def _parse_assignment(self, stmt: ast.Assign, line_num: int):
+        """Parse assignment statement: x = value"""
+        # For complete Python statements, store the full unparsed version
+        full_code = ast.unparse(stmt)
 
-        # Create variable stubs
-        for var_name, part in variables_needed.items():
-            if part.type == 'nl_text':
-                # For NL text, keep it as a comment placeholder
-                stub_code = f"{var_name} = ...  # {part.value}"
+        # Parse targets (LHS)
+        for target in stmt.targets:
+            if isinstance(target, ast.Name):
+                node = self._create_node(
+                    node_type='identifier',
+                    content=target.id,
+                    line_num=line_num,
+                    metadata={
+                        'role': 'target',
+                        'is_definition': True,
+                        'full_statement': full_code  # Store full statement
+                    }
+                )
+                self.defined_vars.add(target.id)
+            elif isinstance(target, ast.Tuple):
+                # Multiple assignment: x, y = ...
+                for elt in target.elts:
+                    if isinstance(elt, ast.Name):
+                        node = self._create_node(
+                            node_type='identifier',
+                            content=elt.id,
+                            line_num=line_num,
+                            metadata={
+                                'role': 'target',
+                                'is_definition': True,
+                                'full_statement': full_code  # Store full statement
+                            }
+                        )
+                        self.defined_vars.add(elt.id)
+
+        # Parse value (RHS)
+        self._parse_expression(stmt.value, line_num)
+
+    def _parse_expression(self, expr: ast.AST, line_num: int, full_statement: str = None) -> Optional[IntentNode]:
+        """Parse an expression recursively"""
+        if isinstance(expr, ast.Name):
+            # Variable reference
+            return self._create_node(
+                node_type='identifier',
+                content=expr.id,
+                line_num=line_num,
+                metadata={'role': 'reference'}
+            )
+
+        elif isinstance(expr, ast.Call):
+            # Function call - capture complete information
+            func_name = None
+            if isinstance(expr.func, ast.Name):
+                func_name = expr.func.id
+            elif isinstance(expr.func, ast.Attribute):
+                # Method call like obj.method()
+                func_name = ast.unparse(expr.func)
             else:
-                stub_code = f"{var_name} = ..."
+                func_name = ast.unparse(expr.func)
 
-            self.stubs.append(StubDeclaration(
-                type='variable',
-                name=var_name,
-                insert_line=part.line - 1,
-                code=stub_code,
-                original_line=part.line
-            ))
+            # Parse positional arguments
+            arg_nodes = []
+            for arg in expr.args:
+                arg_node = self._parse_expression(arg, line_num)
+                if arg_node:
+                    arg_nodes.append(arg_node.id)
 
-    def _infer_function_params(self, context: str, func_name: str) -> List[str]:
-        """Infer function parameters from the call context."""
-        # Extract arguments from function call
-        match = re.search(rf'{func_name}\s*\((.*?)\)', context)
-        if match:
-            args_str = match.group(1)
-            if args_str.strip():
-                # Count arguments
-                args = [arg.strip() for arg in args_str.split(',')]
-                # Generate generic parameter names
-                return [f'arg{i}' for i in range(len(args))]
-        return []
+            # Parse keyword arguments
+            kwarg_nodes = {}
+            for keyword in expr.keywords:
+                if keyword.arg:  # Named keyword (not **kwargs)
+                    kwarg_value_node = self._parse_expression(keyword.value, line_num)
+                    if kwarg_value_node:
+                        kwarg_nodes[keyword.arg] = kwarg_value_node.id
 
-    def _insert_stubs(self, code: str) -> str:
-        """Insert stub declarations into the code."""
-        lines = code.split('\n')
+            # Create function call node with complete metadata
+            func_node = self._create_node(
+                node_type='function_call',
+                content=func_name,
+                line_num=line_num,
+                metadata={
+                    'num_args': len(expr.args),
+                    'num_kwargs': len(expr.keywords),
+                    'arg_node_ids': arg_nodes,
+                    'kwarg_node_ids': kwarg_nodes,
+                    'full_call': ast.unparse(expr),
+                    'full_statement': full_statement or ast.unparse(expr)
+                }
+            )
 
-        # Separate stubs into insertions and replacements
-        insertions = []  # Function stubs - insert before usage
-        replacements = {}  # Variable/NL stubs - replace the original line
+            return func_node
 
-        for stub in self.stubs:
-            if stub.type == 'function':
-                insertions.append(stub)
-            elif stub.type == 'variable':
-                # For variables, replace the original line
-                replacements[stub.original_line - 1] = stub.code
+        elif isinstance(expr, ast.Constant):
+            # Literal value
+            return self._create_node(
+                node_type='literal',
+                content=str(expr.value),
+                line_num=line_num,
+                metadata={'literal_type': type(expr.value).__name__}
+            )
 
-        # First, handle replacements
-        for line_idx, stub_code in replacements.items():
-            if 0 <= line_idx < len(lines):
-                lines[line_idx] = stub_code
+        elif isinstance(expr, ast.BinOp):
+            # Binary operation: x + y
+            self._parse_expression(expr.left, line_num)
+            op_node = self._create_node(
+                node_type='operator',
+                content=self._get_operator_symbol(expr.op),
+                line_num=line_num
+            )
+            self._parse_expression(expr.right, line_num)
+            return op_node
 
-        # Then handle insertions (in reverse to maintain line numbers)
-        sorted_insertions = sorted(insertions, key=lambda s: s.insert_line, reverse=True)
-        for stub in sorted_insertions:
-            insert_idx = max(0, stub.insert_line)
-            if insert_idx <= len(lines):
-                # Don't insert if it would duplicate
-                if stub.code not in '\n'.join(lines[max(0, insert_idx-2):insert_idx+2]):
-                    lines.insert(insert_idx, stub.code)
-                    lines.insert(insert_idx + 1, '')  # Add blank line
+        elif isinstance(expr, ast.List) or isinstance(expr, ast.Tuple):
+            # List or tuple
+            for elt in expr.elts:
+                self._parse_expression(elt, line_num)
 
-        return '\n'.join(lines)
+        elif isinstance(expr, ast.Dict):
+            # Dictionary
+            for key, value in zip(expr.keys, expr.values):
+                if key:
+                    self._parse_expression(key, line_num)
+                self._parse_expression(value, line_num)
+
+        # Add more expression types as needed
+        return None
+
+    def _parse_function_def(self, stmt: ast.FunctionDef, line_num: int):
+        """Parse function definition"""
+        # For complete function definitions, just store the whole thing
+        func_code = ast.unparse(stmt)
+
+        func_node = self._create_node(
+            node_type='function_def',
+            content=stmt.name,
+            line_num=line_num,
+            metadata={
+                'params': [arg.arg for arg in stmt.args.args],
+                'num_params': len(stmt.args.args),
+                'full_code': func_code  # Store complete function code
+            }
+        )
+        self.defined_funcs.add(stmt.name)
+
+        # Parse parameters
+        for arg in stmt.args.args:
+            self._create_node(
+                node_type='parameter',
+                content=arg.arg,
+                line_num=line_num,
+                metadata={'function': stmt.name}
+            )
+
+    def _parse_import(self, stmt: ast.AST, line_num: int):
+        """Parse import statement"""
+        if isinstance(stmt, ast.Import):
+            for alias in stmt.names:
+                self._create_node(
+                    node_type='import',
+                    content=alias.name,
+                    line_num=line_num,
+                    metadata={'as_name': alias.asname}
+                )
+        elif isinstance(stmt, ast.ImportFrom):
+            for alias in stmt.names:
+                self._create_node(
+                    node_type='import_from',
+                    content=alias.name,
+                    line_num=line_num,
+                    metadata={'module': stmt.module, 'as_name': alias.asname}
+                )
+
+    def _parse_nl_statement(self, line: str, line_num: int):
+        """
+        Parse natural language or hybrid statement.
+
+        Supports:
+        - x = natural language text
+        - x = {}
+        - x = {hint text}
+        """
+        if '=' not in line:
+            # Pure NL comment or directive - skip for now
+            return
+
+        lhs, rhs = line.split('=', 1)
+        lhs = lhs.strip()
+        rhs = rhs.strip()
+
+        # Parse LHS (target identifiers)
+        targets = [t.strip() for t in lhs.split(',')]
+        for target in targets:
+            if target and target.isidentifier():
+                self._create_node(
+                    node_type='identifier',
+                    content=target,
+                    line_num=line_num,
+                    metadata={'role': 'target', 'is_definition': True}
+                )
+                self.defined_vars.add(target)
+
+        # Parse RHS
+        # Check if it's a hole
+        if rhs.startswith('{') and rhs.endswith('}'):
+            hint = rhs[1:-1].strip()
+            self._create_node(
+                node_type='hole',
+                content=hint,
+                line_num=line_num,
+                metadata={'has_hint': bool(hint)}
+            )
+        elif rhs == '...':
+            # Ellipsis - treat as empty hole
+            self._create_node(
+                node_type='hole',
+                content='',
+                line_num=line_num,
+                metadata={'has_hint': False}
+            )
+        else:
+            # Natural language expression
+            # Segment into semantic units
+            nl_tokens = self._segment_nl_phrase(rhs)
+            for i, token in enumerate[str](nl_tokens):
+                self._create_node(
+                    node_type='nl_phrase',
+                    content=token,
+                    line_num=line_num,
+                    metadata={'phrase_index': i, 'phrase_count': len(nl_tokens)}
+                )
+
+    def _segment_nl_phrase(self, phrase: str) -> List[str]:
+        """
+        Segment NL phrase into semantic units.
+
+        Uses a general approach without hardcoded keywords:
+        1. Split on common prepositions and conjunctions
+        2. Group remaining words into meaningful chunks
+
+        Example: "split dataset into training and test sets"
+        Returns: ["split dataset", "into", "training", "and", "test sets"]
+        """
+        if not phrase or not phrase.strip():
+            return []
+
+        # General linguistic markers (not domain-specific)
+        markers = {
+            'prepositions': ['into', 'from', 'to', 'with', 'by', 'for', 'using', 'via'],
+            'conjunctions': ['and', 'or', 'but', 'then'],
+            'articles': ['the', 'a', 'an'],
+        }
+
+        all_markers = set()
+        for category in markers.values():
+            all_markers.update(category)
+
+        # Tokenize by markers while keeping them
+        tokens = []
+        words = phrase.split()
+
+        if not words:
+            return [phrase]
+
+        current_chunk = []
+
+        for word in words:
+            word_lower = word.lower()
+
+            if word_lower in all_markers:
+                # Save current chunk if exists
+                if current_chunk:
+                    tokens.append(' '.join(current_chunk))
+                    current_chunk = []
+
+                # Add marker as separate token (unless it's an article)
+                if word_lower not in markers['articles']:
+                    tokens.append(word)
+            else:
+                current_chunk.append(word)
+
+        # Add remaining chunk
+        if current_chunk:
+            tokens.append(' '.join(current_chunk))
+
+        # If no segmentation happened, return whole phrase
+        if not tokens or (len(tokens) == 1 and tokens[0] == phrase):
+            # Try splitting on common patterns
+            # Pattern: "verb object prep object" -> ["verb object", "prep object"]
+            if len(words) >= 3:
+                # Simple heuristic: split roughly in middle on markers
+                mid = len(words) // 2
+                for i in range(mid - 1, min(mid + 2, len(words))):
+                    if i < len(words) and words[i].lower() in all_markers:
+                        tokens = [
+                            ' '.join(words[:i]),
+                            ' '.join(words[i:])
+                        ]
+                        break
+
+            # Final fallback: return whole phrase
+            if not tokens or len(tokens) == 1:
+                return [phrase]
+
+        # Filter out empty tokens
+        return [t for t in tokens if t.strip()]
+
+    def _get_operator_symbol(self, op: ast.operator) -> str:
+        """Get string representation of operator"""
+        op_map = {
+            ast.Add: '+',
+            ast.Sub: '-',
+            ast.Mult: '*',
+            ast.Div: '/',
+            ast.Mod: '%',
+            ast.Pow: '**',
+            ast.LShift: '<<',
+            ast.RShift: '>>',
+            ast.BitOr: '|',
+            ast.BitXor: '^',
+            ast.BitAnd: '&',
+            ast.FloorDiv: '//',
+        }
+        return op_map.get(type(op), '?')
+
+    def _create_node(
+        self,
+        node_type: str,
+        content: str,
+        line_num: int,
+        metadata: Optional[Dict[str, Any]] = None
+    ) -> IntentNode:
+        """Create and register a new IntentNode"""
+        node_id = f"node_{line_num}_{self.node_counter}"
+        self.node_counter += 1
+
+        node = IntentNode(
+            id=node_id,
+            type=node_type,
+            content=content,
+            span=(line_num, line_num),
+            dependencies=[],
+            metadata=metadata or {}
+        )
+
+        self.nodes.append(node)
+        return node
+
+    def _compute_dependencies(self):
+        """Build dependency graph between nodes"""
+        # Map variable/function names to their definition nodes
+        definitions: Dict[str, IntentNode] = {}
+
+        for node in self.nodes:
+            if node.metadata.get('is_definition'):
+                definitions[node.content] = node
+
+        # Find references and link to definitions
+        for node in self.nodes:
+            if node.type == 'identifier' and node.metadata.get('role') == 'reference':
+                # This is a reference to a variable
+                if node.content in definitions:
+                    def_node = definitions[node.content]
+                    if def_node.id != node.id:  # Don't self-reference
+                        node.dependencies.append(def_node.id)
+
+            elif node.type == 'function_call':
+                # This is a function call
+                if node.content in self.defined_funcs:
+                    # Find the function definition node
+                    for def_node in self.nodes:
+                        if def_node.type == 'function_def' and def_node.content == node.content:
+                            node.dependencies.append(def_node.id)
+                            break
 
 
-def parse_incomplete_python(code: str) -> Dict[str, Any]:
+def parse_semiformal(code: str) -> List[IntentNode]:
     """
-    Convenience function to parse incomplete Python code.
+    Convenience function to parse semiformal Python code.
 
     Args:
-        code: Python code that may be incomplete
+        code: Semiformal Python code
 
     Returns:
-        Dict with incomplete_parts, stubs, and annotated_code
+        List of IntentNode objects
     """
-    parser = IncompletePythonParser()
+    parser = SemiformalParser()
     return parser.parse(code)

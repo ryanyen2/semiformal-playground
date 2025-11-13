@@ -9,11 +9,11 @@ Main orchestrator that ties together:
 """
 
 from typing import List, Dict, Any, Optional
-from mvp_parser import SemiformalParser, IntentNode, parse_semiformal
-from mvp_generator import CodeGenerator, Mapping
-from mvp_translator import EditTranslator, Edit, UpdateDecider
-from mvp_edit import EditResult
-from mvp_config import MVPConfig, DEFAULT_CONFIG
+from parser import SemiformalParser, IntentNode, parse_semiformal
+from generator import CodeGenerator, Mapping
+from edit_router import EditTranslator, Edit, UpdateDecider
+from edit_operations import EditResult
+from config import MVPConfig, DEFAULT_CONFIG
 
 
 class BidirectionalEditor:
