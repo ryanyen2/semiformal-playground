@@ -20,6 +20,7 @@ from diff_generator import generate_code_with_diffs
 from ir_sync import AutoSync, IRSync, SyncResult
 from ir import ProgramIR
 from skeleton_generator import generate_skeleton
+from robust_sync import RobustIRSync
 
 app = FastAPI(title="Semiformal Programming API (IR-based)")
 
@@ -448,9 +449,90 @@ async def parse_code_legacy(request: dict):
         raise HTTPException(status_code=500, detail=str(e))
 
 
+@app.post("/skeleton-robust")
+async def generate_skeleton_robust(request: SkeletonRequest):
+    """
+    Generate skeleton using robust mapping algorithm (experimental).
+
+    This endpoint uses the enhanced mapping system that:
+    - Classifies nodes into DIRECT, HYBRID, NL categories
+    - Applies direct transformations where possible (no LLM)
+    - Builds bidirectional mapping for accurate sync
+    - Tracks underspecification
+
+    Returns skeleton code with mapping information.
+    """
+    try:
+        # Create or get robust sync session
+        session_id = f"robust_{request.session_id}"
+        if session_id not in sessions:
+            sessions[session_id] = RobustIRSync()
+
+        robust_sync = sessions[session_id]
+
+        # Generate with mapping
+        skeleton_code, mapping = robust_sync.generate_with_mapping(
+            request.spec_code,
+            use_llm=False  # Skeleton only, no LLM
+        )
+
+        # Get incomplete nodes
+        ir = robust_sync.ir
+        if not ir:
+            return SkeletonResponse(
+                skeleton_code=skeleton_code,
+                incomplete_nodes=[],
+                message="No IR generated"
+            )
+
+        incomplete_nodes = [
+            {
+                'id': node.id,
+                'type': node.node_type.value,
+                'name': node.name,
+                'spec_text': node.spec_text,
+                'line': node.spec_location.line if node.spec_location else 0,
+                'status': node.status.value,
+                'category': mapping.get_category(node.id).value if mapping.get_category(node.id) else 'unknown',
+                'metadata': node.metadata
+            }
+            for node in ir.get_incomplete_nodes()
+        ]
+
+        return SkeletonResponse(
+            skeleton_code=skeleton_code,
+            incomplete_nodes=incomplete_nodes,
+            message=f"Robust skeleton: {len(incomplete_nodes)} incomplete, {len(mapping.underspec_nodes)} underspecified"
+        )
+
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=f"Robust skeleton error: {str(e)}")
+
+
+@app.get("/mapping-info/{session_id}")
+async def get_mapping_info(session_id: str):
+    """
+    Get information about the current bidirectional mapping.
+
+    Useful for debugging and visualization of the mapping structure.
+    """
+    session_key = f"robust_{session_id}"
+    if session_key not in sessions:
+        raise HTTPException(status_code=404, detail="Session not found")
+
+    robust_sync = sessions[session_key]
+    if not isinstance(robust_sync, RobustIRSync):
+        raise HTTPException(status_code=400, detail="Not a robust sync session")
+
+    info = robust_sync.get_mapping_info()
+    return info
+
+
 if __name__ == "__main__":
     import uvicorn
-    
+
     port = int(os.getenv("PORT", 8000))
     uvicorn.run(app, host="0.0.0.0", port=port)
 
