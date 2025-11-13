@@ -6,11 +6,11 @@ Determines and executes appropriate actions based on node category and edit type
 
 import ast
 from typing import List, Set, Optional, Tuple
-from backend.ir import IRNode, ProgramIR, NodeStatus
-from backend.mapping_types import (
+from ir import IRNode, ProgramIR, NodeStatus
+from mapping_types import (
     MappingCategory, EditType, EditInfo, BidirectionalMapping
 )
-from backend.ast_operations import StructuralTransformer, ASTChange, ChangeType
+from ast_operations import StructuralTransformer, ASTChange, ChangeType
 
 
 class EditActionDispatcher:

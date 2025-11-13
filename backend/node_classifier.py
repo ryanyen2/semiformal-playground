@@ -8,8 +8,8 @@ their completeness and Python validity.
 import ast
 import keyword
 from typing import Set, Optional
-from backend.ir import IRNode, NodeType, ProgramIR, NodeStatus
-from backend.mapping_types import MappingCategory
+from ir import IRNode, NodeType, ProgramIR, NodeStatus
+from mapping_types import MappingCategory
 
 
 class NodeClassifier:

@@ -6,17 +6,17 @@ to provide improved bidirectional synchronization.
 """
 
 from typing import List, Tuple, Optional, Set
-from backend.ir import ProgramIR, IRNode, NodeStatus
-from backend.ir_sync import IRSync, SyncResult
-from backend.ast_parser import parse_semiformal
-from backend.skeleton_generator import generate_skeleton
-from backend.mapping_types import (
+from ir import ProgramIR, IRNode, NodeStatus
+from ir_sync import IRSync, SyncResult
+from ast_parser import parse_semiformal
+from skeleton_generator import generate_skeleton
+from mapping_types import (
     BidirectionalMapping, MappingCategory, EditInfo, EditType
 )
-from backend.robust_mapper import RobustMapper
-from backend.node_classifier import NodeClassifier, classify_edit_type
-from backend.edit_dispatcher import EditActionDispatcher, determine_edit_actions, RegenerationSlicer
-from backend.diff_generator import DiffGenerator
+from robust_mapper import RobustMapper
+from node_classifier import NodeClassifier, classify_edit_type
+from edit_dispatcher import EditActionDispatcher, determine_edit_actions, RegenerationSlicer
+from diff_generator import DiffGenerator
 
 
 class RobustIRSync:

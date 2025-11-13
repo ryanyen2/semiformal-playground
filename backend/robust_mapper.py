@@ -6,13 +6,13 @@ Implements the mapping algorithm from ROBUST_MAPPING_DESIGN.md.
 
 import ast
 from typing import List, Dict, Set, Optional, Tuple
-from backend.ir import IRNode, ProgramIR, NodeType
-from backend.mapping_types import (
+from ir import IRNode, ProgramIR, NodeType
+from mapping_types import (
     MappingCategory, IRToPythonMapping, PythonToIRMapping,
     BidirectionalMapping, HybridMapping, NLMapping, UnderspecNode,
     enumerate_ast_paths, get_parent_path
 )
-from backend.node_classifier import NodeClassifier
+from node_classifier import NodeClassifier
 
 
 class RobustMapper:
