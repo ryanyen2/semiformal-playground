@@ -136,9 +136,10 @@ class BidirectionalEditor:
         Handle edit to generated Python code.
 
         Flow:
-        1. Decide if should propagate (using UpdateDecider)
-        2. If transient: just update Python
-        3. If semantic: suggest semiformal update
+        1. Apply the Python edit directly (no LLM needed for direct edits)
+        2. Decide if should propagate (using UpdateDecider)
+        3. If transient: just update Python
+        4. If semantic: suggest semiformal update (only use LLM if needed)
 
         Args:
             edit: The edit made to Python code
@@ -146,6 +147,46 @@ class BidirectionalEditor:
         Returns:
             Dict with result info and optional semiformal suggestion
         """
+        # First, try to apply the edit directly if it's a direct edit type
+        # This avoids unnecessary LLM calls for simple edits
+        if self.translator and self.translator._is_direct_translatable(edit):
+            # Apply direct edit without LLM
+            result = self.translator._direct_translate(edit, self.python_code)
+            if result.success:
+                self.python_code = result.new_code
+                
+                # Decide if should propagate
+                should_propagate, strategy = self.update_decider.should_propagate(edit)
+                
+                return {
+                    'success': True,
+                    'propagate': should_propagate,
+                    'message': result.message,
+                    'python_code': self.python_code,
+                    'strategy': strategy if should_propagate else 'none'
+                }
+        
+        # For non-direct edits or if direct translation failed,
+        # check if we can apply it as a simple text replacement
+        # (e.g., user typed new content directly)
+        if edit.content and edit.line is not None:
+            # Simple line replacement - apply directly
+            lines = self.python_code.split('\n')
+            if 0 <= edit.line < len(lines):
+                lines[edit.line] = edit.content
+                self.python_code = '\n'.join(lines)
+                
+                # Decide if should propagate
+                should_propagate, strategy = self.update_decider.should_propagate(edit)
+                
+                return {
+                    'success': True,
+                    'propagate': should_propagate,
+                    'message': f'Applied Python edit directly on line {edit.line}',
+                    'python_code': self.python_code,
+                    'strategy': strategy if should_propagate else 'none'
+                }
+        
         # Decide if should propagate
         should_propagate, strategy = self.update_decider.should_propagate(edit)
 
@@ -155,19 +196,26 @@ class BidirectionalEditor:
                 'success': True,
                 'propagate': False,
                 'message': 'Transient edit - not propagating to semiformal',
-                'edit_type': edit.type
+                'edit_type': edit.type,
+                'python_code': self.python_code
             }
 
         # Semantic change - should propagate
-        # For now, we'll suggest to user rather than auto-propagate
-        suggestion = self._generate_semiformal_suggestion(edit)
+        # Only use LLM for generating suggestions if it's a complex semantic change
+        # For simple changes, just provide a basic suggestion
+        if strategy == 'llm' and self.generator.client:
+            suggestion = self._generate_semiformal_suggestion(edit)
+        else:
+            # Simple suggestion without LLM
+            suggestion = f"# Suggested: {edit.type} - {edit.content}"
 
         return {
             'success': True,
             'propagate': True,
             'message': f'Semantic change detected - suggest updating semiformal',
             'suggestion': suggestion,
-            'strategy': strategy
+            'strategy': strategy,
+            'python_code': self.python_code
         }
 
     def apply_direct_edit(

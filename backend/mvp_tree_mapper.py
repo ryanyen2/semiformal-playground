@@ -14,7 +14,7 @@ Based on techniques from program synthesis and tree edit distance.
 
 import ast
 from dataclasses import dataclass, field
-from typing import List, Dict, Tuple, Optional, Set
+from typing import List, Dict, Tuple, Optional, Set, Any
 from enum import Enum
 
 
@@ -913,6 +913,10 @@ class MappingAdapter:
         """
         Convert TreeMapping objects to Mapping objects.
         
+        This ensures that each IntentNode gets a proper mapping by:
+        1. Collecting all IntentNodes from IR TreeNode subtrees
+        2. Creating mappings for each IntentNode to the corresponding AST node
+        
         Args:
             tree_mappings: List of TreeMapping from tree mapper
             generated_code: The generated Python code
@@ -925,21 +929,19 @@ class MappingAdapter:
         code_lines = generated_code.split('\n')
         result_mappings = []
         
+        # Track which IntentNodes we've already mapped to avoid duplicates
+        mapped_intent_node_ids = set()
+        
         for tree_mapping in tree_mappings:
             # Skip unmapped nodes
             if tree_mapping.mapping_type == MappingType.UNMAPPED:
                 continue
             
-            # Get the original IR node
+            # Get the original IR node and AST node
             ir_node = tree_mapping.ir_node
             ast_node = tree_mapping.ast_node
             
             if not ast_node or not ast_node.source_node:
-                continue
-            
-            # Extract source node info
-            source_ir = ir_node.source_node
-            if not source_ir:
                 continue
             
             # Get AST node location
@@ -957,28 +959,68 @@ class MappingAdapter:
                 generated_code, line_start, line_end
             )
             
-            # Create CodeSlice
-            code_slice = CodeSlice(
-                code=code_snippet,
-                line_start=line_start,
-                line_end=line_end,
-                ast_nodes=[ast_source]
-            )
+            # Collect all IntentNodes from the IR TreeNode subtree
+            intent_nodes = MappingAdapter._collect_intent_nodes(ir_node)
             
-            # Determine generation method
-            generation_method = MappingAdapter._map_type_to_method(tree_mapping.mapping_type)
-            
-            # Create Mapping
-            mapping = Mapping(
-                node_id=source_ir.id if hasattr(source_ir, 'id') else f"node_{id(source_ir)}",
-                slices=[code_slice],
-                confidence=tree_mapping.confidence,
-                generation_method=generation_method
-            )
-            
-            result_mappings.append(mapping)
+            # Create a mapping for each IntentNode
+            for intent_node in intent_nodes:
+                # Skip if we've already mapped this IntentNode
+                if intent_node.id in mapped_intent_node_ids:
+                    continue
+                
+                # Create CodeSlice
+                code_slice = CodeSlice(
+                    code=code_snippet,
+                    line_start=line_start,
+                    line_end=line_end,
+                    ast_nodes=[ast_source]
+                )
+                
+                # Determine generation method
+                generation_method = MappingAdapter._map_type_to_method(tree_mapping.mapping_type)
+                
+                # Create Mapping
+                mapping = Mapping(
+                    node_id=intent_node.id,
+                    slices=[code_slice],
+                    confidence=tree_mapping.confidence,
+                    generation_method=generation_method
+                )
+                
+                result_mappings.append(mapping)
+                mapped_intent_node_ids.add(intent_node.id)
         
         return result_mappings
+    
+    @staticmethod
+    def _collect_intent_nodes(treeNode: TreeNode) -> List[Any]:
+        """
+        Recursively collect all IntentNodes from a TreeNode subtree.
+        
+        This ensures we create mappings for all IntentNodes, not just the
+        source_node of the root TreeNode.
+        
+        Returns:
+            List of IntentNode objects found in the subtree
+        """
+        from mvp_parser import IntentNode
+        
+        intent_nodes = []
+        
+        # If this TreeNode has a source_node that is an IntentNode, add it
+        if treeNode.source_node:
+            # Check if it's an IntentNode (has 'id' and 'type' attributes)
+            source = treeNode.source_node
+            if hasattr(source, 'id') and hasattr(source, 'type'):
+                # Verify it looks like an IntentNode
+                if isinstance(getattr(source, 'id', None), str) and isinstance(getattr(source, 'type', None), str):
+                    intent_nodes.append(source)
+        
+        # Recursively collect from children
+        for child in treeNode.children:
+            intent_nodes.extend(MappingAdapter._collect_intent_nodes(child))
+        
+        return intent_nodes
     
     @staticmethod
     def _extract_code_snippet(code: str, line_start: int, line_end: int) -> str:
