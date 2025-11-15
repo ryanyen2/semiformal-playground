@@ -692,27 +692,44 @@ class CodeGenerator:
         nodes: List[IntentNode]
     ) -> List[Mapping]:
         """
-        Rebuild mappings from the final generated Python code using tree-based mapping.
-        
-        Uses formalized tree mapping algorithm with:
-        1. Subtree similarity computation
-        2. Structural alignment via DP
-        3. Token-level mapping
-        4. Underspecification detection
-        
+        Rebuild mappings from the final generated Python code.
+
+        Uses improved content-based mapping algorithm that handles:
+        1. LLM-generated code in different order
+        2. Duplicate variable names
+        3. Extra generated code (imports, functions, etc.)
+
+        Falls back to tree-based mapping if content-based fails.
+
         Args:
             generated_code: The final generated Python code
             nodes: The intent nodes from parsing
-            
+
         Returns:
             List of accurate Mapping objects
         """
+        # Try improved content-based mapper first
+        try:
+            from improved_mapper import create_improved_mappings
+
+            mappings = create_improved_mappings(nodes, generated_code)
+
+            # If we got good mappings, use them
+            if len(mappings) >= len(nodes) * 0.5:  # At least 50% of nodes mapped
+                print(f"Using improved content-based mapper ({len(mappings)}/{len(nodes)} nodes mapped)")
+                return mappings
+            else:
+                print(f"Content-based mapper only mapped {len(mappings)}/{len(nodes)} nodes, trying tree mapper...")
+        except Exception as e:
+            print(f"Content-based mapper failed ({e}), falling back to tree mapper...")
+
+        # Fallback to tree mapper
         try:
             from tree_mapper import TreeMapper, MappingAdapter
-            
+
             # Initialize tree mapper
             mapper = TreeMapper()
-            
+
             # Build IR tree from intent nodes
             ir_tree = mapper.build_ir_tree(nodes)
             
