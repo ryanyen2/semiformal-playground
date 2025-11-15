@@ -263,6 +263,11 @@ def create_improved_mappings(intent_nodes: List, generated_code: str) -> List:
     """
     Create mappings using improved content-based algorithm.
 
+    Handles:
+    - Identifiers and function calls: content-based matching (accurate)
+    - NL phrases and holes: map to the statement they're part of
+    - expr_stmt: map to the actual statement
+
     Returns:
         List of Mapping objects (compatible with existing system)
     """
@@ -271,9 +276,18 @@ def create_improved_mappings(intent_nodes: List, generated_code: str) -> List:
     mapper = ImprovedContentMapper(generated_code)
     node_mappings = mapper.map_intent_nodes(intent_nodes)
 
+    # Group nodes by semiformal line for fallback mapping
+    nodes_by_line = {}
+    for node in intent_nodes:
+        line = node.span[0] if hasattr(node, 'span') else 0
+        if line not in nodes_by_line:
+            nodes_by_line[line] = []
+        nodes_by_line[line].append(node)
+
     result = []
     for node in intent_nodes:
         if node.id in node_mappings:
+            # Direct match found
             line, code_snippet = node_mappings[node.id]
 
             mapping = Mapping(
@@ -288,5 +302,37 @@ def create_improved_mappings(intent_nodes: List, generated_code: str) -> List:
                 generation_method='content_based_match'
             )
             result.append(mapping)
+        else:
+            # No direct match - handle special cases
+            node_type = node.type
+
+            if node_type in ('nl_phrase', 'hole', 'expr_stmt'):
+                # Map to the same location as other nodes on this line
+                sf_line = node.span[0] if hasattr(node, 'span') else 0
+
+                # Find a mapped node from the same semiformal line
+                mapped_line = None
+                mapped_snippet = None
+
+                if sf_line in nodes_by_line:
+                    for sibling in nodes_by_line[sf_line]:
+                        if sibling.id in node_mappings and sibling.id != node.id:
+                            mapped_line, mapped_snippet = node_mappings[sibling.id]
+                            break
+
+                if mapped_line:
+                    # Use the same mapping as sibling nodes
+                    mapping = Mapping(
+                        node_id=node.id,
+                        slices=[CodeSlice(
+                            code=mapped_snippet,
+                            line_start=mapped_line,
+                            line_end=mapped_line,
+                            ast_nodes=[]
+                        )],
+                        confidence=0.7,  # Lower confidence for inferred mapping
+                        generation_method='inferred_from_siblings'
+                    )
+                    result.append(mapping)
 
     return result
