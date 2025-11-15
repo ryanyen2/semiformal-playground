@@ -77,8 +77,13 @@ class BidirectionalEditor:
             context=semiformal_code
         )
 
-        # Step 3: Set up translator
-        self.translator = EditTranslator(self.mappings, self.generator, self.config)
+        # Step 3: Set up translator with completeness classification
+        self.translator = EditTranslator(
+            self.mappings,
+            self.generator,
+            self.config,
+            self.intent_nodes  # Pass nodes for completeness-based routing
+        )
 
         return {
             'python_code': self.python_code,
@@ -313,8 +318,13 @@ class BidirectionalEditor:
             context=self.semiformal_code
         )
 
-        # Update translator
-        self.translator = EditTranslator(self.mappings, self.generator, self.config)
+        # Update translator with completeness classification
+        self.translator = EditTranslator(
+            self.mappings,
+            self.generator,
+            self.config,
+            self.intent_nodes  # Pass nodes for completeness-based routing
+        )
 
         return {
             'success': True,

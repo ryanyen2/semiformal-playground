@@ -5,6 +5,7 @@ Translates edits between semiformal and Python using:
 - Phase 1: Direct AST edits
 - Phase 2: Placeholder support
 - Phase 3: Hole filling with LLM
+- Phase 4: Completeness-based routing (direct vs LLM)
 """
 
 from dataclasses import dataclass
@@ -36,7 +37,8 @@ class EditTranslator:
         self,
         mappings: List[Mapping],
         generator: CodeGenerator,
-        config: Optional[MVPConfig] = None
+        config: Optional[MVPConfig] = None,
+        nodes: Optional[List] = None
     ):
         """
         Initialize translator.
@@ -45,11 +47,57 @@ class EditTranslator:
             mappings: Node→code mappings from generator
             generator: CodeGenerator instance for LLM operations
             config: Configuration object (uses DEFAULT_CONFIG if None)
+            nodes: IntentNode list for completeness classification
         """
         self.mappings = {m.node_id: m for m in mappings}
         self.generator = generator
         self.direct_ops = DirectEditOperations()
         self.config = config or DEFAULT_CONFIG
+        self.nodes = nodes or []
+
+        # Initialize completeness classifier if nodes provided
+        self.classifier = None
+        if self.nodes:
+            try:
+                from completeness_classifier import CompletenessClassifier
+                self.classifier = CompletenessClassifier(self.nodes)
+            except ImportError:
+                print("Warning: CompletenessClassifier not available, falling back to type-based routing")
+                self.classifier = None
+
+    def _get_affected_nodes(self, edit: Edit) -> List:
+        """
+        Get IntentNodes affected by this edit.
+
+        Uses edit.location, edit.line, and mappings to find affected nodes.
+        """
+        affected = []
+
+        # Try to find by node_id (edit.location might be a node_id)
+        if edit.location in self.mappings:
+            mapping = self.mappings[edit.location]
+            # Find the original IntentNode
+            for node in self.nodes:
+                if node.id == edit.location:
+                    affected.append(node)
+                    break
+
+        # Try to find by line number
+        if edit.line is not None:
+            for node in self.nodes:
+                if hasattr(node, 'span') and node.span:
+                    if node.span[0] <= edit.line <= node.span[1]:
+                        if node not in affected:
+                            affected.append(node)
+
+        # If still no nodes found, try to find by content matching
+        if not affected and edit.old_content:
+            for node in self.nodes:
+                if hasattr(node, 'content') and node.content == edit.old_content:
+                    if node not in affected:
+                        affected.append(node)
+
+        return affected
 
     def semiformal_to_python(
         self,
@@ -60,7 +108,11 @@ class EditTranslator:
         """
         Translate semiformal edit to Python edit.
 
-        Uses decision tree from EDIT_MAPPING_TABLE.md:
+        Uses completeness-based routing (Phase 4) if classifier available:
+        1. Analyze affected nodes for completeness
+        2. Route based on completeness: COMPLETE → direct, INCOMPLETE → hybrid, NL → LLM
+
+        Falls back to type-based decision tree from EDIT_MAPPING_TABLE.md:
         1. Check if direct translatable (36.6%)
         2. Check if hole fill (14.1%)
         3. Check if needs LLM (21.1%)
@@ -74,7 +126,29 @@ class EditTranslator:
         Returns:
             EditResult with updated Python code
         """
-        # Route based on edit type
+        # Phase 4: Use completeness-based routing if classifier available
+        if self.classifier:
+            affected_nodes = self._get_affected_nodes(edit)
+
+            if affected_nodes:
+                # Get strategy based on node completeness
+                strategy = self.classifier.get_edit_strategy(affected_nodes)
+
+                if strategy == 'direct':
+                    # All complete Python - use direct AST manipulation
+                    return self._direct_translate(edit, python_code)
+                elif strategy == 'hybrid':
+                    # Incomplete Python - might need partial LLM
+                    # For now, try direct first, fall back to LLM if needed
+                    result = self._direct_translate(edit, python_code)
+                    if not result.success:
+                        return self._llm_translate(edit, semiformal_code, python_code)
+                    return result
+                elif strategy == 'llm':
+                    # NL or complex semantic change - use LLM
+                    return self._llm_translate(edit, semiformal_code, python_code)
+
+        # Fallback: Route based on edit type (legacy behavior)
         if self._is_direct_translatable(edit):
             return self._direct_translate(edit, python_code)
         elif self._is_hole_fill(edit):
