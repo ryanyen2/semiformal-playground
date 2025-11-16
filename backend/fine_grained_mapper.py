@@ -606,30 +606,34 @@ class FineGrainedMapper:
         for sf_line, nodes in nodes_by_line.items():
             line_mappings = []
 
+            # Convert semiformal line (0-indexed) to expected code line (1-indexed)
+            # This ensures distance calculation is correct when comparing to AST line numbers
+            expected_code_line = sf_line + 1
+
             # First pass: map concrete Python constructs
             for node in nodes:
                 mapping = None
 
                 if node.type == 'identifier':
-                    mapping = self.map_identifier(node, sf_line)
+                    mapping = self.map_identifier(node, expected_code_line)
 
                 elif node.type == 'function_call':
-                    mapping = self.map_function_call(node, sf_line)
+                    mapping = self.map_function_call(node, expected_code_line)
 
                 elif node.type == 'function_def':
-                    mapping = self.map_function_def(node, sf_line)
+                    mapping = self.map_function_def(node, expected_code_line)
 
                 elif node.type == 'parameter':
-                    mapping = self.map_parameter(node, sf_line)
+                    mapping = self.map_parameter(node, expected_code_line)
 
                 elif node.type == 'operator':
-                    mapping = self.map_operator(node, sf_line)
+                    mapping = self.map_operator(node, expected_code_line)
 
                 elif node.type == 'literal':
-                    mapping = self.map_literal(node, sf_line)
+                    mapping = self.map_literal(node, expected_code_line)
 
                 elif node.type == 'import':
-                    mapping = self.map_import(node, sf_line)
+                    mapping = self.map_import(node, expected_code_line)
 
                 if mapping:
                     mappings.append(mapping)
