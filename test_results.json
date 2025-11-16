@@ -1,0 +1,70 @@
+[
+  {
+    "name": "Simple assignment with NL",
+    "parsed_nodes": 4,
+    "generated": false,
+    "issues": [],
+    "nl_phrase_count": 3,
+    "nl_phrases": [
+      "load data",
+      "from",
+      "file"
+    ]
+  },
+  {
+    "name": "Multiple NL operations",
+    "parsed_nodes": 8,
+    "generated": false,
+    "issues": [],
+    "nl_phrase_count": 5,
+    "nl_phrases": [
+      "load csv file",
+      "remove missing values",
+      "from",
+      "data",
+      "normalize clean"
+    ]
+  },
+  {
+    "name": "Function call with args",
+    "parsed_nodes": 10,
+    "generated": false,
+    "issues": []
+  },
+  {
+    "name": "Mixed Python and NL",
+    "parsed_nodes": 8,
+    "generated": false,
+    "issues": [],
+    "nl_phrase_count": 1,
+    "nl_phrases": [
+      "load dataset"
+    ]
+  },
+  {
+    "name": "Hole with Python",
+    "parsed_nodes": 10,
+    "generated": false,
+    "issues": []
+  },
+  {
+    "name": "Complex NL with multiple verbs",
+    "parsed_nodes": 6,
+    "generated": false,
+    "issues": [],
+    "nl_phrase_count": 5,
+    "nl_phrases": [
+      "load data, clean it,",
+      "and",
+      "transform",
+      "to",
+      "features"
+    ]
+  },
+  {
+    "name": "Reference same variable multiple times",
+    "parsed_nodes": 15,
+    "generated": false,
+    "issues": []
+  }
+]

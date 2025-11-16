@@ -1,0 +1,369 @@
+================================================================================
+RUNNING WITH LLM GENERATION
+================================================================================
+
+================================================================================
+TEST: Simple assignment with NL
+================================================================================
+Semiformal code:
+  1: x = load data from file
+
+Parsed 4 intent nodes:
+  Node  0: identifier      'x                                       ' line=0
+  Node  1: nl_phrase       'load data                               ' line=0
+  Node  2: nl_phrase       'from                                    ' line=0
+  Node  3: nl_phrase       'file                                    ' line=0
+
+Generating with LLM...
+LLM generation attempt 1 failed: Access denied. Retrying...
+LLM generation attempt 2 failed: Access denied. Retrying...
+LLM generation failed after 3 attempts: Access denied
+Falling back to placeholder due to LLM failure: Access denied
+Using improved content-based mapper (4/4 nodes mapped)
+Generated 1 lines
+
+Generated code:
+   1: x = None  # TODO: Fill this placeholder
+
+Fine-grained mappings (4 total):
+  identifier      'x                             ' → line  1 col  0- 1 'x                                       ' (exact)
+  nl_phrase       'load data                     ' → line  1 col  0- 1 'x                                       ' (inferred)
+  nl_phrase       'from                          ' → line  1 col  0- 1 'x                                       ' (inferred)
+  nl_phrase       'file                          ' → line  1 col  0- 1 'x                                       ' (inferred)
+
+================================================================================
+TEST: Multiple NL operations
+================================================================================
+Semiformal code:
+  1: data = load csv file
+  2: clean = remove missing values from data
+  3: result = normalize clean
+
+Parsed 8 intent nodes:
+  Node  0: identifier      'data                                    ' line=0
+  Node  1: nl_phrase       'load csv file                           ' line=0
+  Node  2: identifier      'clean                                   ' line=1
+  Node  3: nl_phrase       'remove missing values                   ' line=1
+  Node  4: nl_phrase       'from                                    ' line=1
+  Node  5: nl_phrase       'data                                    ' line=1
+  Node  6: identifier      'result                                  ' line=2
+  Node  7: nl_phrase       'normalize clean                         ' line=2
+
+Generating with LLM...
+LLM generation attempt 1 failed: Access denied. Retrying...
+LLM generation attempt 2 failed: Access denied. Retrying...
+LLM generation failed after 3 attempts: Access denied
+Falling back to placeholder due to LLM failure: Access denied
+LLM generation attempt 1 failed: Access denied. Retrying...
+LLM generation attempt 2 failed: Access denied. Retrying...
+LLM generation failed after 3 attempts: Access denied
+Falling back to placeholder due to LLM failure: Access denied
+LLM generation attempt 1 failed: Access denied. Retrying...
+LLM generation attempt 2 failed: Access denied. Retrying...
+LLM generation failed after 3 attempts: Access denied
+Falling back to placeholder due to LLM failure: Access denied
+Using improved content-based mapper (8/8 nodes mapped)
+Generated 3 lines
+
+Generated code:
+   1: data = None  # TODO: Fill this placeholder
+   2: clean = None  # TODO: Fill this placeholder
+   3: result = None  # TODO: Fill this placeholder
+
+Fine-grained mappings (8 total):
+  identifier      'data                          ' → line  1 col  0- 4 'data                                    ' (exact)
+  nl_phrase       'load csv file                 ' → line  1 col  0- 4 'data                                    ' (inferred)
+  identifier      'clean                         ' → line  2 col  0- 5 'clean                                   ' (exact)
+  nl_phrase       'remove missing values         ' → line  2 col  0- 5 'clean                                   ' (inferred)
+  nl_phrase       'from                          ' → line  2 col  0- 5 'clean                                   ' (inferred)
+  nl_phrase       'data                          ' → line  2 col  0- 5 'clean                                   ' (inferred)
+  identifier      'result                        ' → line  3 col  0- 6 'result                                  ' (exact)
+  nl_phrase       'normalize clean               ' → line  3 col  0- 6 'result                                  ' (inferred)
+
+================================================================================
+TEST: Function call with args
+================================================================================
+Semiformal code:
+  1: def process(x, y):
+  2:     return x + y
+  3: 
+  4: result = process(a, b)
+  5: print(result)
+
+Parsed 10 intent nodes:
+  Node  0: function_def    'process                                 ' line=0
+  Node  1: parameter       'x                                       ' line=0
+  Node  2: parameter       'y                                       ' line=0
+  Node  3: identifier      'result                                  ' line=3
+  Node  4: identifier      'a                                       ' line=3
+  Node  5: identifier      'b                                       ' line=3
+  Node  6: function_call   'process                                 ' line=3
+  Node  7: identifier      'result                                  ' line=4
+  Node  8: function_call   'print                                   ' line=4
+  Node  9: expr_stmt       'print(result)                           ' line=4
+
+Generating with LLM...
+Using improved content-based mapper (10/10 nodes mapped)
+Generated 4 lines
+
+Generated code:
+   1: def process(x, y):
+   2:     return x + y
+   3: result = process(a, b)
+   4: print(result)
+
+Fine-grained mappings (7 total):
+  identifier      'result                        ' → line  3 col  0- 6 'result                                  ' (exact)
+  identifier      'a                             ' → line  3 col 17-18 'a                                       ' (exact)
+  identifier      'b                             ' → line  3 col 20-21 'b                                       ' (exact)
+  function_call   'process                       ' → line  3 col  9-22 'process(a, b)                           ' (exact)
+  identifier      'result                        ' → line  4 col  6-12 'result                                  ' (exact)
+  function_call   'print                         ' → line  4 col  0-13 'print(result)                           ' (exact)
+  expr_stmt       'print(result)                 ' → line  4 col  6-12 'result                                  ' (inferred)
+
+================================================================================
+TEST: Mixed Python and NL
+================================================================================
+Semiformal code:
+  1: import pandas as pd
+  2: df = load dataset
+  3: df = df.dropna()
+  4: print(df.head())
+
+Parsed 8 intent nodes:
+  Node  0: import          'pandas                                  ' line=0
+  Node  1: identifier      'df                                      ' line=1
+  Node  2: nl_phrase       'load dataset                            ' line=1
+  Node  3: identifier      'df                                      ' line=2
+  Node  4: function_call   'df.dropna                               ' line=2
+  Node  5: function_call   'df.head                                 ' line=3
+  Node  6: function_call   'print                                   ' line=3
+  Node  7: expr_stmt       'print(df.head())                        ' line=3
+
+Generating with LLM...
+LLM generation attempt 1 failed: Access denied. Retrying...
+LLM generation attempt 2 failed: Access denied. Retrying...
+LLM generation failed after 3 attempts: Access denied
+Falling back to placeholder due to LLM failure: Access denied
+Error generating implementation for df.dropna: Access denied
+Error generating implementation for df.head: Access denied
+Content-based mapper failed (expected '(' (<unknown>, line 1)), falling back to tree mapper...
+Generated 11 lines
+
+Generated code:
+   1: def df.dropna():
+   2:     """TODO: Implement this function."""
+   3:     raise NotImplementedError("Function df.dropna needs implementation")
+   4: 
+   5: def df.head():
+   6:     """TODO: Implement this function."""
+   7:     raise NotImplementedError("Function df.head needs implementation")
+   8: 
+   9: df = None  # TODO: Fill this placeholder
+  10: df = df.dropna()
+  11: print(df.head())
+
+Fine-grained mappings (0 total):
+
+================================================================================
+TEST: Hole with Python
+================================================================================
+Semiformal code:
+  1: x = {compute something}
+  2: y = x * 2
+  3: print(x, y)
+
+Parsed 10 intent nodes:
+  Node  0: identifier      'x                                       ' line=0
+  Node  1: hole            'compute something                       ' line=0
+  Node  2: identifier      'y                                       ' line=1
+  Node  3: identifier      'x                                       ' line=1
+  Node  4: operator        '*                                       ' line=1
+  Node  5: literal         '2                                       ' line=1
+  Node  6: identifier      'x                                       ' line=2
+  Node  7: identifier      'y                                       ' line=2
+  Node  8: function_call   'print                                   ' line=2
+  Node  9: expr_stmt       'print(x, y)                             ' line=2
+
+Generating with LLM...
+LLM generation attempt 1 failed: Access denied. Retrying...
+LLM generation attempt 2 failed: Access denied. Retrying...
+LLM generation failed after 3 attempts: Access denied
+Falling back to placeholder due to LLM failure: Access denied
+Using improved content-based mapper (8/10 nodes mapped)
+Generated 3 lines
+
+Generated code:
+   1: x = None  # TODO: Fill this placeholder
+   2: y = x * 2
+   3: print(x, y)
+
+Fine-grained mappings (8 total):
+  identifier      'x                             ' → line  1 col  0- 1 'x                                       ' (exact)
+  hole            'compute something             ' → line  1 col  0- 1 'x                                       ' (inferred)
+  identifier      'y                             ' → line  2 col  0- 1 'y                                       ' (exact)
+  identifier      'x                             ' → line  2 col  4- 5 'x                                       ' (exact)
+  identifier      'x                             ' → line  2 col  4- 5 'x                                       ' (exact)
+  identifier      'y                             ' → line  3 col  9-10 'y                                       ' (exact)
+  function_call   'print                         ' → line  3 col  0-11 'print(x, y)                             ' (exact)
+  expr_stmt       'print(x, y)                   ' → line  2 col  4- 5 'x                                       ' (inferred)
+
+================================================================================
+TEST: Complex NL with multiple verbs
+================================================================================
+Semiformal code:
+  1: result = load data, clean it, and transform to features
+
+Parsed 6 intent nodes:
+  Node  0: identifier      'result                                  ' line=0
+  Node  1: nl_phrase       'load data, clean it,                    ' line=0
+  Node  2: nl_phrase       'and                                     ' line=0
+  Node  3: nl_phrase       'transform                               ' line=0
+  Node  4: nl_phrase       'to                                      ' line=0
+  Node  5: nl_phrase       'features                                ' line=0
+
+Generating with LLM...
+LLM generation attempt 1 failed: Access denied. Retrying...
+LLM generation attempt 2 failed: Access denied. Retrying...
+LLM generation failed after 3 attempts: Access denied
+Falling back to placeholder due to LLM failure: Access denied
+Using improved content-based mapper (6/6 nodes mapped)
+Generated 1 lines
+
+Generated code:
+   1: result = None  # TODO: Fill this placeholder
+
+Fine-grained mappings (6 total):
+  identifier      'result                        ' → line  1 col  0- 6 'result                                  ' (exact)
+  nl_phrase       'load data, clean it,          ' → line  1 col  0- 6 'result                                  ' (inferred)
+  nl_phrase       'and                           ' → line  1 col  0- 6 'result                                  ' (inferred)
+  nl_phrase       'transform                     ' → line  1 col  0- 6 'result                                  ' (inferred)
+  nl_phrase       'to                            ' → line  1 col  0- 6 'result                                  ' (inferred)
+  nl_phrase       'features                      ' → line  1 col  0- 6 'result                                  ' (inferred)
+
+================================================================================
+TEST: Reference same variable multiple times
+================================================================================
+Semiformal code:
+  1: x = 10
+  2: y = x + 5
+  3: z = x * 2
+  4: print(x, y, z)
+
+Parsed 15 intent nodes:
+  Node  0: identifier      'x                                       ' line=0
+  Node  1: literal         '10                                      ' line=0
+  Node  2: identifier      'y                                       ' line=1
+  Node  3: identifier      'x                                       ' line=1
+  Node  4: operator        '+                                       ' line=1
+  Node  5: literal         '5                                       ' line=1
+  Node  6: identifier      'z                                       ' line=2
+  Node  7: identifier      'x                                       ' line=2
+  Node  8: operator        '*                                       ' line=2
+  Node  9: literal         '2                                       ' line=2
+  Node 10: identifier      'x                                       ' line=3
+  Node 11: identifier      'y                                       ' line=3
+  Node 12: identifier      'z                                       ' line=3
+  Node 13: function_call   'print                                   ' line=3
+  Node 14: expr_stmt       'print(x, y, z)                          ' line=3
+
+Generating with LLM...
+Using improved content-based mapper (10/15 nodes mapped)
+Generated 4 lines
+
+Generated code:
+   1: x = 10
+   2: y = x + 5
+   3: z = x * 2
+   4: print(x, y, z)
+
+Fine-grained mappings (10 total):
+  identifier      'x                             ' → line  1 col  0- 1 'x                                       ' (exact)
+  identifier      'y                             ' → line  2 col  0- 1 'y                                       ' (exact)
+  identifier      'x                             ' → line  2 col  4- 5 'x                                       ' (exact)
+  identifier      'z                             ' → line  3 col  0- 1 'z                                       ' (exact)
+  identifier      'x                             ' → line  2 col  4- 5 'x                                       ' (exact)
+  identifier      'x                             ' → line  3 col  4- 5 'x                                       ' (exact)
+  identifier      'y                             ' → line  4 col  9-10 'y                                       ' (exact)
+  identifier      'z                             ' → line  4 col 12-13 'z                                       ' (exact)
+  function_call   'print                         ' → line  4 col  0-14 'print(x, y, z)                          ' (exact)
+  expr_stmt       'print(x, y, z)                ' → line  3 col  4- 5 'x                                       ' (inferred)
+
+================================================================================
+ISSUE SUMMARY ACROSS ALL TESTS
+================================================================================
+
+Found 3 distinct issue types:
+
+
+============================================================
+ISSUE: duplicate_code
+============================================================
+Occurrences: 1
+
+  Test: Mixed Python and NL
+  Severity: high
+    count: 1
+    examples: [('"""TODO: Implement this function."""', [2, 6])]
+
+============================================================
+ISSUE: nl_phrases_same_location
+============================================================
+Occurrences: 3
+
+  Test: Simple assignment with NL
+  Severity: high
+    location: 1:0-1
+    phrases: ['load data', 'from', 'file']
+
+  Test: Multiple NL operations
+  Severity: high
+    location: 2:0-5
+    phrases: ['remove missing values', 'from', 'data']
+
+  Test: Complex NL with multiple verbs
+  Severity: high
+    location: 1:0-6
+    phrases: ['load data, clean it,', 'and', 'transform'] ... (5 total)
+
+============================================================
+ISSUE: unmapped_nodes
+============================================================
+Occurrences: 4
+
+  Test: Function call with args
+  Severity: unknown
+    count: 3
+    nodes: [{'type': 'function_def', 'content': 'process'}, {'type': 'parameter', 'content': 'x'}, {'type': 'parameter', 'content': 'y'}]
+
+  Test: Mixed Python and NL
+  Severity: unknown
+    count: 8
+    nodes: [{'type': 'import', 'content': 'pandas'}, {'type': 'identifier', 'content': 'df'}, {'type': 'nl_phrase', 'content': 'load dataset'}] ... (8 total)
+
+  Test: Hole with Python
+  Severity: unknown
+    count: 2
+    nodes: [{'type': 'operator', 'content': '*'}, {'type': 'literal', 'content': '2'}]
+
+================================================================================
+CORE ISSUES IDENTIFIED
+================================================================================
+
+1. NL PHRASE GRANULARITY PROBLEM
+   Multiple NL phrases mapping to same location
+   ROOT CAUSE: Semantic matching not granular enough
+   SOLUTION NEEDED: Better phrase-to-code-fragment mapping
+
+2. INCOMPLETE MAPPING
+   Some nodes not mapped at all
+   ROOT CAUSE: Mapper doesn't handle all node types
+   SOLUTION NEEDED: Fallback mapping for all node types
+
+3. CODE GENERATION QUALITY
+   LLM generating duplicate code
+   ROOT CAUSE: LLM prompt doesn't prevent duplication
+   SOLUTION NEEDED: Post-processing deduplication + better prompts
+
+
+Detailed results saved to test_results.json
