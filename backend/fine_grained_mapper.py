@@ -38,6 +38,10 @@ class FineGrainedMapper:
         self.name_nodes: List[Tuple[ast.Name, int, int, int]] = []  # (node, line, col_start, col_end)
         self.call_nodes: List[Tuple[ast.Call, int, int, int]] = []
         self.assign_nodes: List[Tuple[ast.Assign, int]] = []
+        self.function_def_nodes: List[Tuple[ast.FunctionDef, int]] = []
+        self.import_nodes: List[Tuple[ast.AST, int]] = []  # Import or ImportFrom
+        self.constant_nodes: List[Tuple[ast.Constant, int, int, int]] = []  # literals
+        self.binop_nodes: List[Tuple[ast.BinOp, int, int, int]] = []  # binary operators
 
         if self.ast_tree:
             self._build_indices()
@@ -60,6 +64,26 @@ class FineGrainedMapper:
             elif isinstance(node, ast.Assign):
                 line = getattr(node, 'lineno', 0)
                 self.assign_nodes.append((node, line))
+
+            elif isinstance(node, ast.FunctionDef):
+                line = getattr(node, 'lineno', 0)
+                self.function_def_nodes.append((node, line))
+
+            elif isinstance(node, (ast.Import, ast.ImportFrom)):
+                line = getattr(node, 'lineno', 0)
+                self.import_nodes.append((node, line))
+
+            elif isinstance(node, ast.Constant):
+                line = getattr(node, 'lineno', 0)
+                col_start = getattr(node, 'col_offset', 0)
+                col_end = getattr(node, 'end_col_offset', col_start)
+                self.constant_nodes.append((node, line, col_start, col_end))
+
+            elif isinstance(node, ast.BinOp):
+                line = getattr(node, 'lineno', 0)
+                col_start = getattr(node, 'col_offset', 0)
+                col_end = getattr(node, 'end_col_offset', col_start)
+                self.binop_nodes.append((node, line, col_start, col_end))
 
     def map_identifier(
         self,
@@ -129,10 +153,11 @@ class FineGrainedMapper:
                     else:
                         score -= 50  # Penalize early lines (likely function bodies)
 
-                    # Prefer matches closer to expected line
+                    # CRITICAL: Strongly prefer matches closer to expected line
+                    # This prevents all references from mapping to first occurrence
                     if expected_line:
                         distance = abs(line - expected_line)
-                        score -= distance * 2  # More weight on line distance
+                        score -= distance * 20  # Much stronger weight (was *2, now *20)
 
                     candidates.append((score, name_node, line, col_start, col_end))
 
@@ -296,6 +321,267 @@ class FineGrainedMapper:
 
         return None
 
+    def map_function_def(
+        self,
+        intent_node,
+        expected_line: Optional[int] = None
+    ) -> Optional[ASTMapping]:
+        """Map function definition to FunctionDef AST node"""
+        func_name = intent_node.content
+
+        candidates = []
+        for func_def, line in self.function_def_nodes:
+            if func_def.name == func_name:
+                score = 100
+
+                # Prefer matches closer to expected line
+                if expected_line:
+                    distance = abs(line - expected_line)
+                    score -= distance * 10
+
+                candidates.append((score, func_def, line))
+
+        if candidates:
+            candidates.sort(reverse=True, key=lambda x: x[0])
+            _, func_def, line = candidates[0]
+
+            # Map to function name (not entire def)
+            col_start = getattr(func_def, 'col_offset', 0) + 4  # After 'def '
+            col_end = col_start + len(func_name)
+            code_text = self._extract_text(line, col_start, col_end)
+
+            return ASTMapping(
+                node_id=intent_node.id,
+                ast_node=func_def,
+                line=line,
+                col_start=col_start,
+                col_end=col_end,
+                code_text=code_text,
+                confidence=0.95,
+                mapping_type='exact'
+            )
+
+        return None
+
+    def map_parameter(
+        self,
+        intent_node,
+        expected_line: Optional[int] = None
+    ) -> Optional[ASTMapping]:
+        """Map parameter to arg node in function signature"""
+        param_name = intent_node.content
+
+        # Look for function definitions near expected line
+        candidates = []
+        for func_def, line in self.function_def_nodes:
+            # Check if this parameter is in the function's args
+            for arg in func_def.args.args:
+                if arg.arg == param_name:
+                    score = 100
+
+                    # Prefer matches closer to expected line
+                    if expected_line:
+                        distance = abs(line - expected_line)
+                        score -= distance * 10
+
+                    candidates.append((score, arg, line, func_def))
+
+        if candidates:
+            candidates.sort(reverse=True, key=lambda x: x[0])
+            _, arg, line, func_def = candidates[0]
+
+            # Approximate column position (after function name and '(')
+            col_start = getattr(arg, 'col_offset', 0)
+            col_end = getattr(arg, 'end_col_offset', col_start + len(param_name))
+            code_text = self._extract_text(line, col_start, col_end)
+
+            return ASTMapping(
+                node_id=intent_node.id,
+                ast_node=arg,
+                line=line,
+                col_start=col_start,
+                col_end=col_end,
+                code_text=code_text,
+                confidence=0.9,
+                mapping_type='exact'
+            )
+
+        return None
+
+    def map_operator(
+        self,
+        intent_node,
+        expected_line: Optional[int] = None
+    ) -> Optional[ASTMapping]:
+        """Map operator to BinOp AST node"""
+        operator = intent_node.content
+
+        # Map operator symbols to AST types
+        op_mapping = {
+            '+': ast.Add,
+            '-': ast.Sub,
+            '*': ast.Mult,
+            '/': ast.Div,
+            '//': ast.FloorDiv,
+            '%': ast.Mod,
+            '**': ast.Pow,
+        }
+
+        op_class = op_mapping.get(operator)
+        if not op_class:
+            return None
+
+        candidates = []
+        for binop, line, col_start, col_end in self.binop_nodes:
+            if isinstance(binop.op, op_class):
+                score = 100
+
+                # Prefer matches closer to expected line
+                if expected_line:
+                    distance = abs(line - expected_line)
+                    score -= distance * 20
+
+                candidates.append((score, binop, line, col_start, col_end))
+
+        if candidates:
+            candidates.sort(reverse=True, key=lambda x: x[0])
+            _, binop, line, col_start, col_end = candidates[0]
+
+            # Find operator position in the line
+            line_text = self.code_lines[line - 1] if line <= len(self.code_lines) else ""
+            op_pos = line_text.find(operator, col_start)
+            if op_pos >= 0:
+                op_col_start = op_pos
+                op_col_end = op_pos + len(operator)
+                code_text = self._extract_text(line, op_col_start, op_col_end)
+            else:
+                op_col_start = col_start
+                op_col_end = col_end
+                code_text = operator
+
+            return ASTMapping(
+                node_id=intent_node.id,
+                ast_node=binop,
+                line=line,
+                col_start=op_col_start,
+                col_end=op_col_end,
+                code_text=code_text,
+                confidence=0.85,
+                mapping_type='exact'
+            )
+
+        return None
+
+    def map_literal(
+        self,
+        intent_node,
+        expected_line: Optional[int] = None
+    ) -> Optional[ASTMapping]:
+        """Map literal to Constant AST node"""
+        literal_value = intent_node.content
+
+        # Try to parse as Python literal
+        try:
+            # Convert to actual value for comparison
+            import ast as ast_module
+            parsed_value = ast_module.literal_eval(literal_value)
+        except:
+            parsed_value = literal_value
+
+        candidates = []
+        for constant, line, col_start, col_end in self.constant_nodes:
+            # Check if values match
+            if constant.value == parsed_value or str(constant.value) == literal_value:
+                score = 100
+
+                # Strongly prefer matches closer to expected line
+                if expected_line:
+                    distance = abs(line - expected_line)
+                    score -= distance * 20
+
+                candidates.append((score, constant, line, col_start, col_end))
+
+        if candidates:
+            candidates.sort(reverse=True, key=lambda x: x[0])
+            _, constant, line, col_start, col_end = candidates[0]
+
+            code_text = self._extract_text(line, col_start, col_end)
+
+            return ASTMapping(
+                node_id=intent_node.id,
+                ast_node=constant,
+                line=line,
+                col_start=col_start,
+                col_end=col_end,
+                code_text=code_text,
+                confidence=0.9,
+                mapping_type='exact'
+            )
+
+        return None
+
+    def map_import(
+        self,
+        intent_node,
+        expected_line: Optional[int] = None
+    ) -> Optional[ASTMapping]:
+        """Map import to Import/ImportFrom AST node"""
+        module_name = intent_node.content
+
+        candidates = []
+        for import_node, line in self.import_nodes:
+            matched = False
+
+            if isinstance(import_node, ast.Import):
+                # import module
+                for alias in import_node.names:
+                    if alias.name == module_name or alias.name.startswith(module_name + '.'):
+                        matched = True
+                        break
+
+            elif isinstance(import_node, ast.ImportFrom):
+                # from module import ...
+                if import_node.module == module_name or (import_node.module and import_node.module.startswith(module_name + '.')):
+                    matched = True
+
+            if matched:
+                score = 100
+
+                # Prefer matches closer to expected line
+                if expected_line:
+                    distance = abs(line - expected_line)
+                    score -= distance * 10
+
+                candidates.append((score, import_node, line))
+
+        if candidates:
+            candidates.sort(reverse=True, key=lambda x: x[0])
+            _, import_node, line = candidates[0]
+
+            # Find module name position
+            line_text = self.code_lines[line - 1] if line <= len(self.code_lines) else ""
+            col_start = line_text.find(module_name)
+            if col_start >= 0:
+                col_end = col_start + len(module_name)
+                code_text = self._extract_text(line, col_start, col_end)
+            else:
+                col_start = 0
+                col_end = len(line_text)
+                code_text = line_text
+
+            return ASTMapping(
+                node_id=intent_node.id,
+                ast_node=import_node,
+                line=line,
+                col_start=col_start,
+                col_end=col_end,
+                code_text=code_text,
+                confidence=0.9,
+                mapping_type='exact'
+            )
+
+        return None
+
     def _extract_text(self, line: int, col_start: int, col_end: int) -> str:
         """Extract text from code at specific position"""
         if 1 <= line <= len(self.code_lines):
@@ -320,19 +606,34 @@ class FineGrainedMapper:
         for sf_line, nodes in nodes_by_line.items():
             line_mappings = []
 
-            # First pass: map identifiers and function calls
+            # First pass: map concrete Python constructs
             for node in nodes:
+                mapping = None
+
                 if node.type == 'identifier':
                     mapping = self.map_identifier(node, sf_line)
-                    if mapping:
-                        mappings.append(mapping)
-                        line_mappings.append(mapping)
 
                 elif node.type == 'function_call':
                     mapping = self.map_function_call(node, sf_line)
-                    if mapping:
-                        mappings.append(mapping)
-                        line_mappings.append(mapping)
+
+                elif node.type == 'function_def':
+                    mapping = self.map_function_def(node, sf_line)
+
+                elif node.type == 'parameter':
+                    mapping = self.map_parameter(node, sf_line)
+
+                elif node.type == 'operator':
+                    mapping = self.map_operator(node, sf_line)
+
+                elif node.type == 'literal':
+                    mapping = self.map_literal(node, sf_line)
+
+                elif node.type == 'import':
+                    mapping = self.map_import(node, sf_line)
+
+                if mapping:
+                    mappings.append(mapping)
+                    line_mappings.append(mapping)
 
             # Second pass: map NL phrases using sibling context
             for node in nodes:
