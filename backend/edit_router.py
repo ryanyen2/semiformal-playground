@@ -2,10 +2,9 @@
 MVP Edit Translator
 
 Translates edits between semiformal and Python using:
-- Phase 1: Direct AST edits
-- Phase 2: Placeholder support
-- Phase 3: Hole filling with LLM
-- Phase 4: Completeness-based routing (direct vs LLM)
+- Direct AST edits for complete Python
+- LLM refinement for implementation updates (LLM call #2)
+- Completeness-based routing
 """
 
 from dataclasses import dataclass
@@ -279,14 +278,12 @@ class EditTranslator:
         python_code: str
     ) -> EditResult:
         """
-        Fill a hole using LLM.
-
-        Phase 3: Hole syntax
+        Fill a hole using LLM (LLM call #1: code generation).
         """
         hint = edit.content
         target_var = edit.metadata.get('target_var')
 
-        # Generate code to fill the hole
+        # Generate code to fill the hole (uses LLM call #1)
         filled_code = self.generator.fill_hole(hint, semiformal_code, target_var)
 
         # Insert at the appropriate location
@@ -294,7 +291,6 @@ class EditTranslator:
         lines = python_code.split('\n')
 
         if line_num < len(lines):
-            # Replace the line
             indent = len(lines[line_num]) - len(lines[line_num].lstrip())
             if target_var:
                 new_line = ' ' * indent + f"{target_var} = {filled_code}"
@@ -379,17 +375,35 @@ class EditTranslator:
     ) -> EditResult:
         """
         Translate using LLM for complex semantic changes.
-
-        Phase 3: LLM integration
+        
+        Uses single LLM call with diff format generation.
         """
-        # For now, mark for regeneration
-        # Full LLM translation would involve regenerating affected code sections
+        # Re-parse semiformal code to get updated nodes
+        try:
+            from parser import SemiformalParser
+            parser = SemiformalParser()
+            nodes = parser.parse(semiformal_code)
+        except:
+            # Fallback: mark for regeneration
+            return EditResult(
+                success=True,
+                new_code=python_code,
+                message=f"LLM translation for '{edit.type}' requires regeneration",
+                needs_regeneration=True,
+                regeneration_targets=[edit.location]
+            )
+        
+        # Use single LLM call with existing Python code (diff mode)
+        new_code, mappings = self.generator.generate_with_mapping(
+            nodes=nodes,
+            context=semiformal_code,
+            existing_python=python_code  # Pass existing code for diff generation
+        )
+        
         return EditResult(
             success=True,
-            new_code=python_code,
-            message=f"LLM translation for '{edit.type}' requires regeneration",
-            needs_regeneration=True,
-            regeneration_targets=[edit.location]
+            new_code=new_code,
+            message=f"Generated code using LLM for '{edit.type}'"
         )
 
 

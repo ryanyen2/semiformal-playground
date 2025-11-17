@@ -9,7 +9,7 @@ Main orchestrator that ties together:
 """
 
 from typing import List, Dict, Any, Optional
-from parser import SemiformalParser, IntentNode, parse_semiformal
+from parser import SemiformalParser, IntentNode
 from generator import CodeGenerator, Mapping
 from edit_router import EditTranslator, Edit, UpdateDecider
 from edit_operations import EditResult
@@ -71,10 +71,11 @@ class BidirectionalEditor:
         # Step 1: Parse
         self.intent_nodes = self.parser.parse(semiformal_code)
 
-        # Step 2: Generate Python
+        # Step 2: Generate Python (full generation, no existing code)
         self.python_code, self.mappings = self.generator.generate_with_mapping(
             self.intent_nodes,
-            context=semiformal_code
+            context=semiformal_code,
+            existing_python=""  # Empty for full generation
         )
 
         # Step 3: Set up translator with completeness classification
@@ -312,10 +313,11 @@ class BidirectionalEditor:
         # Re-parse semiformal code
         self.intent_nodes = self.parser.parse(self.semiformal_code)
 
-        # Re-generate Python
+        # Re-generate Python (use diff mode if we have existing code)
         self.python_code, self.mappings = self.generator.generate_with_mapping(
             self.intent_nodes,
-            context=self.semiformal_code
+            context=self.semiformal_code,
+            existing_python=self.python_code if self.python_code else ""  # Use diff mode if code exists
         )
 
         # Update translator with completeness classification
@@ -344,7 +346,7 @@ class BidirectionalEditor:
             'python_code': self.python_code,
             'nodes': [self._node_to_dict(node) for node in self.intent_nodes],
             'mappings': [self._mapping_to_dict(mapping) for mapping in self.mappings],
-            'has_llm': self.generator.client is not None
+            'has_llm': getattr(self.generator.llm_service, "client", None) is not None
         }
 
     def _handle_regeneration(self, targets: List[str]):

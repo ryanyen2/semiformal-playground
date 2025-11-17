@@ -323,7 +323,7 @@ async def apply_direct_edit(operation: str, **kwargs):
 if __name__ == "__main__":
     import uvicorn
 
-    port = int(os.getenv("PORT", 8001))  # Use 8001 to not conflict with old API
+    port = int(os.getenv("PORT", 8000))
     print(f"Starting MVP API server on port {port}")
     print(f"OpenAI API key: {'configured' if OPENAI_API_KEY else 'NOT configured'}")
     uvicorn.run(app, host="0.0.0.0", port=port)
