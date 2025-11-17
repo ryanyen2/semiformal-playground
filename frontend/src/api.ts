@@ -4,149 +4,113 @@
 
 const API_BASE = 'http://localhost:8000'
 
-export interface IncompleteNode {
-  id: string
-  type: string
-  name: string
-  spec_text: string
+// Types matching backend IR structure
+
+export interface SourceLocation {
   line: number
-  status: string
+  col: number
+  end_line: number | null
+  end_col: number | null
+}
+
+export interface IRNode {
+  id: string
+  type: string  // NodeType enum value
+  name: string
+  status: string  // NodeStatus enum value
+  spec_text: string
+  code_text: string
+  spec_location: SourceLocation | null
+  code_location: SourceLocation | null
   metadata: Record<string, any>
 }
 
-export interface CompleteNode {
-  id: string
-  type: string
-  name: string
-  spec_text: string
-  line: number
-}
-
-export interface AnalyzeResult {
-  incomplete_nodes: IncompleteNode[]
-  complete_nodes: CompleteNode[]
-  dependencies: Record<string, string[]>
-  needs_generation: boolean
-  message: string
-}
-
-export interface DiffHunk {
-  old_start: number
-  old_count: number
-  new_start: number
-  new_count: number
-  lines: string[]
-}
-
-export interface Diff {
-  old_file: string
-  new_file: string
-  hunks: DiffHunk[]
-  diff_text: string
-}
-
-export interface GenerateResult {
-  generated_code: string
-  diffs: Diff[]
-  affected_nodes: string[]
-  message: string
-}
-
-export interface SyncCodeResult {
-  updated_spec: string
-  diffs: Diff[]
-  affected_nodes: string[]
-  message: string
-}
-
-export interface IRState {
-  ir: Record<string, any>
+export interface ProgramIR {
+  nodes: Record<string, IRNode>
   spec_source: string
   code_source: string
+  dependency_graph: Record<string, string[]>
 }
 
-export interface SkeletonResult {
+export interface ASTMapping {
+  node_id: string
+  line: number
+  col_start: number
+  col_end: number
+  code_text: string
+  confidence: number
+  mapping_type: string  // 'exact', 'semantic', 'inferred'
+}
+
+// API Responses
+
+export interface ParseResponse {
+  ir: ProgramIR
+  incomplete_nodes: IRNode[]
   skeleton_code: string
-  incomplete_nodes: IncompleteNode[]
+}
+
+export interface GenerateResponse {
+  generated_code: string
+  ir: ProgramIR
+  mappings: Record<string, ASTMapping>
+}
+
+export interface EditSemiformalResponse {
+  updated_code: string
+  needs_regeneration: boolean
+  affected_nodes: string[]
   message: string
 }
 
-export interface StateResponse {
-  semiformal_code: string
-  python_code: string
-  nodes: IntentNode[]
-  mappings: NodeMapping[]
-  has_llm: boolean
+export interface EditCodeResponse {
+  updated_semiformal: string
+  message: string
 }
 
+export interface SkeletonResponse {
+  skeleton_code: string
+  incomplete_count: number
+}
+
+export interface MappingsResponse {
+  mappings: Record<string, ASTMapping>
+  ir: ProgramIR
+}
+
+// API Functions
+
 /**
- * Generate Python skeleton without LLM (instant).
+ * Parse semiformal code and build IR.
  */
-export async function generateSkeleton(
-  specCode: string,
-  sessionId: string = 'default'
-): Promise<SkeletonResult> {
-  const response = await fetch(`${API_BASE}/skeleton`, {
+export async function parse(code: string): Promise<ParseResponse> {
+  const response = await fetch(`${API_BASE}/parse`, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
     },
-    body: JSON.stringify({
-      spec_code: specCode,
-      session_id: sessionId,
-    }),
+    body: JSON.stringify({ code }),
   })
 
   if (!response.ok) {
     const error = await response.json()
-    throw new Error(error.detail || 'Skeleton generation failed')
+    throw new Error(error.detail || 'Parse failed')
   }
 
   return response.json()
 }
 
 /**
- * Analyze spec code (continuous parsing).
+ * Generate complete Python code from semiformal specification.
+ * Uses LLM to generate code with comment anchors.
  */
-export async function analyzeSpec(
-  specCode: string,
-  sessionId: string = 'default'
-): Promise<AnalyzeResult> {
-  const response = await fetch(`${API_BASE}/analyze`, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-    },
-    body: JSON.stringify({
-      spec_code: specCode,
-      session_id: sessionId,
-    }),
-  })
-
-  if (!response.ok) {
-    const error = await response.json()
-    throw new Error(error.detail || 'Analysis failed')
-  }
-
-  return response.json()
-}
-
-/**
- * Generate code from spec (triggered on save).
- */
-export async function generateCode(
-  specCode: string,
-  sessionId: string = 'default'
-): Promise<GenerateResult> {
+export async function generate(semiformalCode: string): Promise<GenerateResponse> {
   const response = await fetch(`${API_BASE}/generate`, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
     },
-    body: JSON.stringify({
-      spec_code: specCode,
-      session_id: sessionId,
-    }),
+    body: JSON.stringify({ semiformal_code: semiformalCode }),
   })
 
   if (!response.ok) {
@@ -158,145 +122,114 @@ export async function generateCode(
 }
 
 /**
- * Sync code changes back to spec.
+ * Handle edits to semiformal code.
+ *
+ * Two modes:
+ * - 'code_node_edit': Direct structural edit (no LLM, fast)
+ * - 'nl_phrase_edit': NL phrase changed, needs LLM refinement
  */
-export async function syncCodeToSpec(
-  specCode: string,
-  oldCode: string,
-  newCode: string,
-  sessionId: string = 'default'
-): Promise<SyncCodeResult> {
-  const response = await fetch(`${API_BASE}/sync-code`, {
+export async function editSemiformal(
+  semiformalCode: string,
+  editType: 'code_node_edit' | 'nl_phrase_edit',
+  nodeId?: string,
+  newContent?: string
+): Promise<EditSemiformalResponse> {
+  const response = await fetch(`${API_BASE}/edit/semiformal`, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
     },
     body: JSON.stringify({
-      spec_code: specCode,
+      semiformal_code: semiformalCode,
+      edit_type: editType,
+      node_id: nodeId,
+      new_content: newContent,
+    }),
+  })
+
+  if (!response.ok) {
+    const error = await response.json()
+    throw new Error(error.detail || 'Edit failed')
+  }
+
+  return response.json()
+}
+
+/**
+ * Handle edits to generated code.
+ * Syncs changes back to semiformal spec.
+ */
+export async function editCode(
+  semiformalCode: string,
+  generatedCode: string,
+  oldCode: string,
+  newCode: string
+): Promise<EditCodeResponse> {
+  const response = await fetch(`${API_BASE}/edit/code`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({
+      semiformal_code: semiformalCode,
+      generated_code: generatedCode,
       old_code: oldCode,
       new_code: newCode,
-      session_id: sessionId,
     }),
   })
 
   if (!response.ok) {
     const error = await response.json()
-    throw new Error(error.detail || 'Sync failed')
+    throw new Error(error.detail || 'Code edit failed')
   }
 
   return response.json()
 }
 
 /**
- * Get current IR state.
+ * Generate instant skeleton without LLM.
+ * Called on every keystroke for fast feedback.
  */
-export async function getIRState(
-  sessionId: string = 'default'
-): Promise<IRState> {
-  const response = await fetch(`${API_BASE}/get-ir`, {
+export async function skeleton(semiformalCode: string): Promise<SkeletonResponse> {
+  const response = await fetch(`${API_BASE}/skeleton`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({ semiformal_code: semiformalCode }),
+  })
+
+  if (!response.ok) {
+    const error = await response.json()
+    throw new Error(error.detail || 'Skeleton generation failed')
+  }
+
+  return response.json()
+}
+
+/**
+ * Get fine-grained mappings between IR nodes and AST nodes.
+ * Used for highlighting and navigation.
+ */
+export async function getMappings(
+  semiformalCode: string,
+  generatedCode: string
+): Promise<MappingsResponse> {
+  const response = await fetch(`${API_BASE}/mappings`, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
     },
     body: JSON.stringify({
-      session_id: sessionId,
+      semiformal_code: semiformalCode,
+      generated_code: generatedCode,
     }),
   })
 
   if (!response.ok) {
     const error = await response.json()
-    throw new Error(error.detail || 'Failed to get IR state')
+    throw new Error(error.detail || 'Mappings failed')
   }
 
   return response.json()
 }
-
-/**
- * WebSocket connection for real-time sync.
- */
-export class SyncWebSocket {
-  private ws: WebSocket | null = null
-  private sessionId: string
-  private onAnalysisCallback?: (data: any) => void
-  private onGenerationCallback?: (data: any) => void
-  private onErrorCallback?: (error: string) => void
-
-  constructor(sessionId: string = 'default') {
-    this.sessionId = sessionId
-  }
-
-  connect(): Promise<void> {
-    return new Promise((resolve, reject) => {
-      const wsUrl = `ws://localhost:8000/ws/${this.sessionId}`
-      this.ws = new WebSocket(wsUrl)
-
-      this.ws.onopen = () => {
-        console.log('WebSocket connected')
-        resolve()
-      }
-
-      this.ws.onerror = (error) => {
-        console.error('WebSocket error:', error)
-        reject(error)
-      }
-
-      this.ws.onmessage = (event) => {
-        try {
-          const message = JSON.parse(event.data)
-          
-          if (message.type === 'analysis' && this.onAnalysisCallback) {
-            this.onAnalysisCallback(message)
-          } else if (message.type === 'generation' && this.onGenerationCallback) {
-            this.onGenerationCallback(message)
-          } else if (message.type === 'error' && this.onErrorCallback) {
-            this.onErrorCallback(message.message)
-          }
-        } catch (error) {
-          console.error('Failed to parse WebSocket message:', error)
-        }
-      }
-
-      this.ws.onclose = () => {
-        console.log('WebSocket disconnected')
-      }
-    })
-  }
-
-  sendAnalyze(specCode: string): void {
-    if (this.ws && this.ws.readyState === WebSocket.OPEN) {
-      this.ws.send(JSON.stringify({
-        type: 'analyze',
-        spec_code: specCode,
-      }))
-    }
-  }
-
-  sendGenerate(specCode: string): void {
-    if (this.ws && this.ws.readyState === WebSocket.OPEN) {
-      this.ws.send(JSON.stringify({
-        type: 'generate',
-        spec_code: specCode,
-      }))
-    }
-  }
-
-  onAnalysis(callback: (data: any) => void): void {
-    this.onAnalysisCallback = callback
-  }
-
-  onGeneration(callback: (data: any) => void): void {
-    this.onGenerationCallback = callback
-  }
-
-  onError(callback: (error: string) => void): void {
-    this.onErrorCallback = callback
-  }
-
-  disconnect(): void {
-    if (this.ws) {
-      this.ws.close()
-      this.ws = null
-    }
-  }
-}
-

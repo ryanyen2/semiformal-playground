@@ -252,6 +252,8 @@ class DiffGenerator:
                     "content": (
                         "You are an expert Python programmer. Generate complete, "
                         "working Python code from semiformal specifications. "
+                        "CRITICAL: Add a descriptive comment BEFORE each statement as an anchor. "
+                        "These comments help with code mapping and backward slicing. "
                         "Analyze the entire program context and generate coherent "
                         "implementations that respect dependencies. "
                         "Provide ONLY Python code without markdown formatting."
@@ -280,38 +282,52 @@ class DiffGenerator:
     ) -> str:
         """Build prompt for LLM generation with full context."""
         lines = []
-        
+
         lines.append("Generate complete Python code from this semiformal specification:")
         lines.append("")
         lines.append("```python")
         lines.append(context['spec_source'])
         lines.append("```")
         lines.append("")
-        
+
         lines.append("Elements that need implementation:")
         for node in incomplete_nodes:
             if node.node_type == NodeType.FUNCTION_DEF:
                 lines.append(f"- Function '{node.name}': {node.spec_text.strip()}")
-                
+
                 deps = context['dependencies'].get(node.name, [])
                 if deps:
                     lines.append(f"  Dependencies: {', '.join(deps)}")
-            
+
             elif node.node_type == NodeType.NL_EXPRESSION:
                 nl_desc = context['nl_descriptions'].get(node.name, '')
                 lines.append(f"- Variable '{node.name}' = {nl_desc}")
-            
+
             elif node.node_type == NodeType.FUNCTION_CALL:
                 lines.append(f"- Undefined function '{node.name}' needs stub")
-        
+
         lines.append("")
-        lines.append("Generate complete Python code with all incomplete parts implemented.")
-        lines.append("Maintain the structure and respect dependencies.")
-        lines.append("Replace '...' with actual implementations.")
-        lines.append("Convert natural language expressions to Python code.")
+        lines.append("IMPORTANT: Generate complete Python code with the following requirements:")
+        lines.append("1. Add a descriptive comment BEFORE each statement (assignment, function call, return, etc.)")
+        lines.append("2. These comments serve as anchors for code mapping and should describe what the statement does")
+        lines.append("3. Use concise, clear comments like '# load data', '# process results', '# return value'")
+        lines.append("4. Maintain the structure and respect dependencies")
+        lines.append("5. Replace '...' with actual implementations")
+        lines.append("6. Convert natural language expressions to Python code")
         lines.append("")
-        lines.append("Output the complete, executable Python program:")
-        
+        lines.append("Example format:")
+        lines.append("```python")
+        lines.append("def process_data(filename):")
+        lines.append("    # load csv file")
+        lines.append("    data = pd.read_csv(filename)")
+        lines.append("    # clean missing values")
+        lines.append("    cleaned = data.dropna()")
+        lines.append("    # return cleaned data")
+        lines.append("    return cleaned")
+        lines.append("```")
+        lines.append("")
+        lines.append("Output the complete, executable Python program with statement comments:")
+
         return "\n".join(lines)
     
     def _extract_implementations(

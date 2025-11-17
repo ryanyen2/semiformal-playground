@@ -1,18 +1,16 @@
 /**
  * AST/IR Tree Viewer Component
  *
- * Interactive tree visualization for parsed intent nodes, inspired by astexplorer.
+ * Interactive tree visualization for IR nodes.
  *
  * Features:
  * - Expandable/collapsible tree nodes with +/- indicators
- * - Click on node → highlight corresponding tokens in spec/python
- * - Hover on node → highlight corresponding tokens
- * - Auto-expand to show cursor position
- * - Color-coded node types and attributes
- * - Compact, clean display
+ * - Click on node → highlight corresponding code
+ * - Color-coded node types and statuses
+ * - Shows node metadata
  */
 
-import type { IntentNode, NodeMapping } from './api'
+import type { IRNode } from './api'
 
 interface TreeNodeState {
   expanded: boolean
@@ -20,13 +18,12 @@ interface TreeNodeState {
 
 export class ASTViewer {
   private container: HTMLElement
-  private nodes: IntentNode[] = []
-  private mappings: NodeMapping[] = []
-  private nodeStates: Map<number, TreeNodeState> = new Map()
-  private selectedNodeIndex: number | null = null
+  private nodes: IRNode[] = []
+  private nodeStates: Map<string, TreeNodeState> = new Map()
+  private selectedNodeId: string | null = null
 
   // Callback for interactions
-  private onNodeClick?: (nodeIndex: number) => void
+  private onNodeClick?: (nodeId: string) => void
 
   constructor(container: HTMLElement) {
     this.container = container
@@ -34,16 +31,15 @@ export class ASTViewer {
   }
 
   /**
-   * Update the tree with new nodes and mappings
+   * Update the tree with new nodes
    */
-  updateTree(nodes: IntentNode[], mappings: NodeMapping[]) {
+  updateNodes(nodes: IRNode[]) {
     this.nodes = nodes
-    this.mappings = mappings
 
     // Initialize node states if needed
-    for (let i = 0; i < nodes.length; i++) {
-      if (!this.nodeStates.has(i)) {
-        this.nodeStates.set(i, { expanded: false })
+    for (const node of nodes) {
+      if (!this.nodeStates.has(node.id)) {
+        this.nodeStates.set(node.id, { expanded: false })
       }
     }
 
