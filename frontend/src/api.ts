@@ -71,6 +71,14 @@ export interface SkeletonResult {
   message: string
 }
 
+export interface StateResponse {
+  semiformal_code: string
+  python_code: string
+  nodes: IntentNode[]
+  mappings: NodeMapping[]
+  has_llm: boolean
+}
+
 /**
  * Generate Python skeleton without LLM (instant).
  */

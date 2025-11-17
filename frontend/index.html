@@ -15,6 +15,8 @@
       font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
       background: #1e1e1e;
       color: #d4d4d4;
+      height: 100vh;
+      overflow: hidden;
     }
 
     #app {
@@ -25,22 +27,24 @@
 
     header {
       background: #252526;
-      padding: 1rem 2rem;
+      padding: 0.75rem 1.5rem;
       border-bottom: 1px solid #3e3e42;
+      flex-shrink: 0;
     }
 
     h1 {
-      font-size: 1.5rem;
+      font-size: 1.25rem;
       font-weight: 600;
       color: #cccccc;
     }
 
     .subtitle {
-      font-size: 0.875rem;
+      font-size: 0.8rem;
       color: #858585;
       margin-top: 0.25rem;
     }
 
+<<<<<<< HEAD
     .instructions {
       margin-top: 0.75rem;
       padding: 0.75rem;
@@ -57,12 +61,19 @@
       border-radius: 3px;
       font-family: 'Monaco', 'Menlo', 'Courier New', monospace;
       color: #4ec9b0;
+=======
+    .hint {
+      font-size: 0.75rem;
+      color: #6a9955;
+      margin-top: 0.25rem;
+>>>>>>> claude/robust-bidirectional-mapping-011CV65DWbEMZH9vRSkZy3XD
     }
 
     main {
       flex: 1;
       display: flex;
       overflow: hidden;
+      min-height: 0;
     }
 
     .editor-container {
@@ -71,6 +82,11 @@
       flex-direction: column;
       border-right: 1px solid #3e3e42;
       background: #1e1e1e;
+      min-width: 0;
+    }
+
+    .editor-container:last-child {
+      border-right: none;
     }
 
     .editor-container:last-child {
@@ -81,26 +97,63 @@
       display: flex;
       justify-content: space-between;
       align-items: center;
-      padding: 0.75rem 1rem;
+      padding: 0.5rem 1rem;
       background: #252526;
       border-bottom: 1px solid #3e3e42;
+      flex-shrink: 0;
     }
 
     .editor-title {
-      font-size: 0.875rem;
+      font-size: 0.8rem;
       font-weight: 600;
       color: #cccccc;
+<<<<<<< HEAD
     }
 
     .editor-hint {
       font-size: 0.75rem;
       color: #858585;
       font-style: italic;
+=======
+      display: flex;
+      align-items: center;
+      gap: 0.5rem;
+    }
+
+    .editor-status {
+      font-size: 0.7rem;
+      color: #858585;
+      display: flex;
+      align-items: center;
+      gap: 0.5rem;
+    }
+
+    .status-dot {
+      width: 6px;
+      height: 6px;
+      border-radius: 50%;
+      background: #4ec9b0;
+      animation: pulse 2s infinite;
+    }
+
+    .status-dot.parsing {
+      background: #ffcb6b;
+    }
+
+    .status-dot.generating {
+      background: #c586c0;
+    }
+
+    @keyframes pulse {
+      0%, 100% { opacity: 1; }
+      50% { opacity: 0.5; }
+>>>>>>> claude/robust-bidirectional-mapping-011CV65DWbEMZH9vRSkZy3XD
     }
 
     .editor-wrapper {
       flex: 1;
       overflow: auto;
+      min-height: 0;
     }
 
     .cm-editor {
@@ -109,22 +162,66 @@
       background: #1e1e1e !important;
     }
 
+    .cm-scroller {
+      overflow: auto;
+    }
+
     .cm-gutters {
       background: #1e1e1e !important;
       border-right: 1px solid #3e3e42 !important;
     }
 
-    .cm-incomplete {
-      opacity: 0.5;
+    /* Node mapping decorations */
+    .cm-nl-text {
+      color: #6a9955;
       font-style: italic;
+      opacity: 0.9;
     }
 
-    .cm-stub {
-      background: rgba(255, 203, 107, 0.1);
-      border-left: 2px solid #ffcb6b;
+    .cm-hole {
+      background: rgba(255, 203, 107, 0.15);
+      border-bottom: 2px dotted #ffcb6b;
     }
 
+    .cm-hole-hint {
+      background: rgba(197, 134, 192, 0.15);
+      border-bottom: 2px dotted #c586c0;
+    }
+
+    .cm-placeholder {
+      background: rgba(78, 201, 176, 0.1);
+      border-left: 2px solid #4ec9b0;
+    }
+
+    .cm-node-highlight {
+      background: rgba(82, 139, 255, 0.2);
+      border-radius: 3px;
+    }
+
+    /* Token-based highlighting */
+    .cm-python-mapped-token {
+      background: rgba(82, 139, 255, 0.35);
+      border-radius: 2px;
+      padding: 0 2px;
+      font-weight: 500;
+      box-shadow: 0 0 0 1px rgba(82, 139, 255, 0.5);
+    }
+
+    .cm-python-mapped-line-bg {
+      background: rgba(82, 139, 255, 0.08);
+    }
+
+    .cm-python-line-marker {
+      position: absolute;
+      width: 3px;
+      height: 100%;
+      left: 0;
+      background: linear-gradient(to right, #528bff, transparent);
+    }
+
+    /* Status bar */
     .status-bar {
+<<<<<<< HEAD
       padding: 0.5rem 1rem;
       background: #007acc;
       color: white;
@@ -132,14 +229,298 @@
       display: flex;
       align-items: center;
       gap: 0.5rem;
+=======
+      padding: 0.4rem 1rem;
+      background: #252526;
+      border-top: 1px solid #3e3e42;
+      color: #d4d4d4;
+      font-size: 0.75rem;
+      display: flex;
+      align-items: center;
+      gap: 1rem;
+      flex-shrink: 0;
+    }
+
+    .status-bar.parsing {
+      background: rgba(255, 203, 107, 0.2);
+      border-top-color: #ffcb6b;
+    }
+
+    .status-bar.generating {
+      background: rgba(197, 134, 192, 0.2);
+      border-top-color: #c586c0;
+>>>>>>> claude/robust-bidirectional-mapping-011CV65DWbEMZH9vRSkZy3XD
     }
 
     .status-bar.error {
-      background: #f48771;
+      background: rgba(244, 135, 113, 0.2);
+      border-top-color: #f48771;
+      color: #f48771;
     }
 
     .status-bar.success {
-      background: #4ec9b0;
+      background: rgba(78, 201, 176, 0.2);
+      border-top-color: #4ec9b0;
+      color: #4ec9b0;
+    }
+
+    .status-item {
+      display: flex;
+      align-items: center;
+      gap: 0.5rem;
+    }
+
+    .status-separator {
+      width: 1px;
+      height: 1rem;
+      background: #3e3e42;
+    }
+
+    /* AST Viewer */
+    .ast-viewer-container {
+      width: 320px;
+      display: flex;
+      flex-direction: column;
+      border-left: 1px solid #3e3e42;
+      background: #1e1e1e;
+      overflow: hidden;
+    }
+
+    .ast-viewer-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      padding: 0.5rem 1rem;
+      background: #252526;
+      border-bottom: 1px solid #3e3e42;
+      flex-shrink: 0;
+    }
+
+    .ast-viewer-title {
+      font-size: 0.8rem;
+      font-weight: 600;
+      color: #cccccc;
+    }
+
+    .ast-viewer-wrapper {
+      flex: 1;
+      overflow-y: auto;
+      overflow-x: hidden;
+      padding: 0.5rem;
+    }
+
+    .ast-tree {
+      font-size: 0.75rem;
+      font-family: 'Fira Code', 'Consolas', 'Monaco', monospace;
+    }
+
+    .ast-empty {
+      color: #858585;
+      font-style: italic;
+      padding: 1rem;
+      text-align: center;
+    }
+
+    .ast-line-group {
+      margin-bottom: 0.75rem;
+    }
+
+    .ast-line-header {
+      display: flex;
+      align-items: center;
+      gap: 0.5rem;
+      padding: 0.25rem 0.5rem;
+      background: #252526;
+      border-radius: 3px;
+      cursor: pointer;
+      user-select: none;
+    }
+
+    .ast-line-header:hover {
+      background: #2d2d30;
+    }
+
+    .ast-line-label {
+      color: #858585;
+      font-weight: 600;
+    }
+
+    .ast-node-count {
+      color: #6a9955;
+      font-size: 0.7rem;
+      margin-left: auto;
+    }
+
+    .ast-toggle {
+      width: 1rem;
+      height: 1rem;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      color: #858585;
+      font-weight: bold;
+      cursor: pointer;
+      user-select: none;
+    }
+
+    .ast-toggle:hover {
+      color: #cccccc;
+    }
+
+    .ast-toggle-small {
+      width: 0.85rem;
+      height: 0.85rem;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      color: #858585;
+      font-size: 0.7rem;
+      font-weight: bold;
+      cursor: pointer;
+      user-select: none;
+      margin-right: 0.25rem;
+    }
+
+    .ast-toggle-small:hover {
+      color: #cccccc;
+    }
+
+    .ast-nodes-container {
+      padding-left: 1rem;
+      margin-top: 0.25rem;
+    }
+
+    .ast-node {
+      padding: 0.35rem 0.5rem;
+      margin: 0.15rem 0;
+      border-left: 2px solid transparent;
+      border-radius: 3px;
+      cursor: pointer;
+      transition: all 0.15s ease;
+    }
+
+    .ast-node:hover {
+      background: rgba(82, 139, 255, 0.1);
+      border-left-color: #528bff;
+    }
+
+    .ast-node-selected {
+      background: rgba(82, 139, 255, 0.2);
+      border-left-color: #528bff;
+    }
+
+    .ast-node-header {
+      display: flex;
+      align-items: center;
+      gap: 0.35rem;
+      flex-wrap: wrap;
+    }
+
+    .ast-node-type {
+      font-weight: 600;
+      padding: 0.1rem 0.35rem;
+      border-radius: 2px;
+      font-size: 0.7rem;
+    }
+
+    /* Node type colors */
+    .ast-type-identifier {
+      color: #9cdcfe;
+      background: rgba(156, 220, 254, 0.15);
+    }
+
+    .ast-type-nl_phrase {
+      color: #6a9955;
+      background: rgba(106, 153, 85, 0.15);
+    }
+
+    .ast-type-nl_text {
+      color: #6a9955;
+      background: rgba(106, 153, 85, 0.15);
+    }
+
+    .ast-type-function_call {
+      color: #dcdcaa;
+      background: rgba(220, 220, 170, 0.15);
+    }
+
+    .ast-type-operator {
+      color: #d4d4d4;
+      background: rgba(212, 212, 212, 0.15);
+    }
+
+    .ast-type-literal {
+      color: #ce9178;
+      background: rgba(206, 145, 120, 0.15);
+    }
+
+    .ast-type-hole {
+      color: #ffcb6b;
+      background: rgba(255, 203, 107, 0.15);
+    }
+
+    .ast-type-hole_hint {
+      color: #c586c0;
+      background: rgba(197, 134, 192, 0.15);
+    }
+
+    .ast-type-hole_empty {
+      color: #ffcb6b;
+      background: rgba(255, 203, 107, 0.15);
+    }
+
+    .ast-type-placeholder {
+      color: #4ec9b0;
+      background: rgba(78, 201, 176, 0.15);
+    }
+
+    .ast-node-value {
+      color: #d4d4d4;
+      word-break: break-word;
+    }
+
+    .ast-node-pos {
+      color: #858585;
+      font-size: 0.65rem;
+      margin-left: auto;
+    }
+
+    .ast-metadata {
+      margin-top: 0.25rem;
+      padding-left: 1rem;
+      border-left: 1px solid #3e3e42;
+    }
+
+    .ast-metadata-item {
+      padding: 0.15rem 0;
+      color: #858585;
+      font-size: 0.7rem;
+    }
+
+    .ast-metadata-key {
+      color: #9cdcfe;
+    }
+
+    .ast-metadata-value {
+      color: #ce9178;
+    }
+
+    /* Scrollbar styling for AST viewer */
+    .ast-viewer-wrapper::-webkit-scrollbar {
+      width: 8px;
+    }
+
+    .ast-viewer-wrapper::-webkit-scrollbar-track {
+      background: #1e1e1e;
+    }
+
+    .ast-viewer-wrapper::-webkit-scrollbar-thumb {
+      background: #424242;
+      border-radius: 4px;
+    }
+
+    .ast-viewer-wrapper::-webkit-scrollbar-thumb:hover {
+      background: #4e4e4e;
     }
 
     .status-bar.info {
@@ -165,8 +546,18 @@
     <main>
       <div class="editor-container">
         <div class="editor-header">
+<<<<<<< HEAD
           <span class="editor-title">Semiformal Specification</span>
           <span class="editor-hint">Automatic parsing • Cmd+S to generate</span>
+=======
+          <span class="editor-title">
+            Semiformal Code
+          </span>
+          <span class="editor-status">
+            <span class="status-dot" id="spec-status-dot"></span>
+            <span id="spec-status-text">Ready</span>
+          </span>
+>>>>>>> claude/robust-bidirectional-mapping-011CV65DWbEMZH9vRSkZy3XD
         </div>
         <div class="editor-wrapper">
           <div id="spec-editor"></div>
@@ -174,15 +565,43 @@
       </div>
       <div class="editor-container">
         <div class="editor-header">
+<<<<<<< HEAD
           <span class="editor-title">Generated Python Code</span>
           <span class="editor-hint">Updated on save • Unified-diff based</span>
+=======
+          <span class="editor-title">
+            Generated Python
+          </span>
+          <span class="editor-status">
+            <span class="status-dot" id="code-status-dot"></span>
+            <span id="code-status-text">Not generated</span>
+          </span>
+>>>>>>> claude/robust-bidirectional-mapping-011CV65DWbEMZH9vRSkZy3XD
         </div>
         <div class="editor-wrapper">
           <div id="code-editor"></div>
         </div>
       </div>
+      <div class="ast-viewer-container">
+        <div class="ast-viewer-header">
+          <span class="ast-viewer-title">IR Tree</span>
+        </div>
+        <div class="ast-viewer-wrapper" id="ast-viewer"></div>
+      </div>
     </main>
-    <div id="status-bar" class="status-bar" style="display: none;"></div>
+    <div id="status-bar" class="status-bar">
+      <span class="status-item">
+        <span id="status-message">Ready</span>
+      </span>
+      <span class="status-separator"></span>
+      <span class="status-item">
+        <span id="node-count">0 nodes</span>
+      </span>
+      <span class="status-separator"></span>
+      <span class="status-item">
+        <span id="llm-status">LLM: checking...</span>
+      </span>
+    </div>
   </div>
   <script type="module" src="/src/index.ts"></script>
 </body>
