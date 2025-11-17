@@ -21,6 +21,7 @@ from dotenv import load_dotenv
 
 from ir import ProgramIR, IRNode, NodeType, NodeStatus
 from skeleton_generator import generate_skeleton
+from code_mapper import extract_implementations_robust
 
 load_dotenv()
 
@@ -264,13 +265,16 @@ class DiffGenerator:
         )
         
         generated_code = response.choices[0].message.content.strip()
-        
-        # Parse generated code and extract implementations
-        implementations = self._extract_implementations(
+
+        # Clean code fences first
+        generated_code = self._clean_code_fences(generated_code)
+
+        # Parse generated code and extract implementations using robust AST-based mapping
+        implementations = extract_implementations_robust(
             generated_code,
             incomplete_nodes
         )
-        
+
         return implementations
     
     def _build_generation_prompt(
