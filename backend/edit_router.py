@@ -3,10 +3,11 @@ MVP Edit Translator
 
 Translates edits between semiformal and Python using:
 - Direct AST edits for complete Python
-- LLM refinement for implementation updates (LLM call #2)
-- Completeness-based routing
+- LLM regeneration for NL/hole content changes
+- Node type-based routing (simpler than completeness classification)
 """
 
+import ast
 from dataclasses import dataclass
 from typing import List, Optional, Tuple
 from edit_operations import DirectEditOperations, EditResult
@@ -17,16 +18,147 @@ from config import MVPConfig, DEFAULT_CONFIG
 @dataclass
 class Edit:
     """Represents an edit to code"""
-    type: str  # See EDIT_MAPPING_TABLE.md for all types
     location: str  # Function name, line number, or node ID
     content: str  # The new content
     old_content: Optional[str] = None  # Previous content for comparison
     line: Optional[int] = None
     metadata: dict = None
+    type: Optional[str] = None  # Edit type (inferred by backend if not provided)
 
     def __post_init__(self):
         if self.metadata is None:
             self.metadata = {}
+
+
+class EditTypeInferrer:
+    """Infers edit type from semiformal code changes"""
+    
+    @staticmethod
+    def infer_edit_type(edit: Edit, semiformal_line: str, old_semiformal_line: Optional[str] = None) -> str:
+        """
+        Infer edit type based on what changed in the semiformal code.
+        
+        Strategy:
+        1. Check if the line is valid Python → Python statement edit
+        2. Check if contains holes {} or NL → mixed/incomplete edit
+        3. Check specific patterns (rename, operator change, etc.)
+        
+        Returns:
+            Edit type string (e.g., 'python_statement_edit', 'identifier_rename', 'nl_edit')
+        """
+        # Try to parse as Python
+        try:
+            tree = ast.parse(semiformal_line.strip())
+            # It's valid Python - determine what kind of Python edit
+            
+            # If we have old content, check what changed
+            if old_semiformal_line:
+                return EditTypeInferrer._infer_python_edit_type(
+                    semiformal_line, 
+                    old_semiformal_line,
+                    tree
+                )
+            
+            # New line - check statement type
+            if tree.body:
+                stmt = tree.body[0]
+                if isinstance(stmt, ast.Assign):
+                    return 'python_assignment_edit'
+                elif isinstance(stmt, ast.Expr):
+                    return 'python_expression_edit'
+                elif isinstance(stmt, ast.FunctionDef):
+                    return 'python_function_def_edit'
+            
+            return 'python_statement_edit'
+            
+        except SyntaxError:
+            # Not valid Python - check for semiformal constructs
+            line = semiformal_line.strip()
+            
+            # Check for holes
+            if '{' in line and '}' in line:
+                return 'hole_edit'
+            
+            # Check for assignment with NL
+            if '=' in line:
+                return 'nl_assignment_edit'
+            
+            return 'nl_edit'
+    
+    @staticmethod
+    def _infer_python_edit_type(new_line: str, old_line: str, tree: ast.AST) -> str:
+        """Infer specific Python edit type by comparing old and new"""
+        
+        # Check for identifier rename (simple case)
+        new_identifiers = set(EditTypeInferrer._extract_identifiers(new_line))
+        old_identifiers = set(EditTypeInferrer._extract_identifiers(old_line))
+        
+        added = new_identifiers - old_identifiers
+        removed = old_identifiers - new_identifiers
+        
+        if len(added) == 1 and len(removed) == 1:
+            return 'identifier_rename'
+        
+        # Check for operator change
+        new_ops = set(EditTypeInferrer._extract_operators(new_line))
+        old_ops = set(EditTypeInferrer._extract_operators(old_line))
+        
+        if new_ops != old_ops:
+            return 'operator_change'
+        
+        # Check for literal change
+        try:
+            old_tree = ast.parse(old_line.strip())
+            if EditTypeInferrer._literals_changed(tree, old_tree):
+                return 'literal_change'
+        except:
+            pass
+        
+        # Check for function call changes
+        if 'def ' in new_line or 'def ' in old_line:
+            return 'function_def_edit'
+        
+        # Default to generic statement edit
+        return 'python_statement_edit'
+    
+    @staticmethod
+    def _extract_identifiers(line: str) -> List[str]:
+        """Extract Python identifiers from a line"""
+        try:
+            tree = ast.parse(line.strip())
+            identifiers = []
+            for node in ast.walk(tree):
+                if isinstance(node, ast.Name):
+                    identifiers.append(node.id)
+            return identifiers
+        except:
+            return []
+    
+    @staticmethod
+    def _extract_operators(line: str) -> List[str]:
+        """Extract operators from a line"""
+        operators = []
+        op_chars = {'+', '-', '*', '/', '%', '**', '//', '<', '>', '<=', '>=', '==', '!='}
+        for op in op_chars:
+            if op in line:
+                operators.append(op)
+        return operators
+    
+    @staticmethod
+    def _literals_changed(tree1: ast.AST, tree2: ast.AST) -> bool:
+        """Check if literals changed between two ASTs"""
+        literals1 = []
+        literals2 = []
+        
+        for node in ast.walk(tree1):
+            if isinstance(node, ast.Constant):
+                literals1.append(node.value)
+        
+        for node in ast.walk(tree2):
+            if isinstance(node, ast.Constant):
+                literals2.append(node.value)
+        
+        return literals1 != literals2
 
 
 class EditTranslator:
@@ -46,23 +178,14 @@ class EditTranslator:
             mappings: Node→code mappings from generator
             generator: CodeGenerator instance for LLM operations
             config: Configuration object (uses DEFAULT_CONFIG if None)
-            nodes: IntentNode list for completeness classification
+            nodes: IntentNode list for node type analysis
         """
         self.mappings = {m.node_id: m for m in mappings}
         self.generator = generator
         self.direct_ops = DirectEditOperations()
         self.config = config or DEFAULT_CONFIG
         self.nodes = nodes or []
-
-        # Initialize completeness classifier if nodes provided
-        self.classifier = None
-        if self.nodes:
-            try:
-                from completeness_classifier import CompletenessClassifier
-                self.classifier = CompletenessClassifier(self.nodes)
-            except ImportError:
-                print("Warning: CompletenessClassifier not available, falling back to type-based routing")
-                self.classifier = None
+        self.edit_inferrer = EditTypeInferrer()
 
     def _get_affected_nodes(self, edit: Edit) -> List:
         """
@@ -107,16 +230,13 @@ class EditTranslator:
         """
         Translate semiformal edit to Python edit.
 
-        Uses completeness-based routing (Phase 4) if classifier available:
-        1. Analyze affected nodes for completeness
-        2. Route based on completeness: COMPLETE → direct, INCOMPLETE → hybrid, NL → LLM
-
-        Falls back to type-based decision tree from EDIT_MAPPING_TABLE.md:
-        1. Check if direct translatable (36.6%)
-        2. Check if hole fill (14.1%)
-        3. Check if needs LLM (21.1%)
-        4. Otherwise use placeholder/regenerate
-
+        Simplified routing strategy:
+        1. Infer edit type if not provided
+        2. Check edited line type:
+           - Complete Python statement → direct edit
+           - Python with holes/incomplete → direct edit (may need regeneration)
+           - NL/hole content → LLM generation
+        
         Args:
             edit: The edit made to semiformal code
             semiformal_code: Current semiformal code
@@ -125,46 +245,28 @@ class EditTranslator:
         Returns:
             EditResult with updated Python code
         """
-        # Phase 4: Use completeness-based routing if classifier available
-        if self.classifier:
-            affected_nodes = self._get_affected_nodes(edit)
-
-            if affected_nodes:
-                # Get strategy based on node completeness
-                strategy = self.classifier.get_edit_strategy(affected_nodes)
-
-                if strategy == 'direct':
-                    # All complete Python - use direct AST manipulation
-                    return self._direct_translate(edit, python_code)
-                elif strategy == 'hybrid':
-                    # Incomplete Python - might need partial LLM
-                    # For now, try direct first, fall back to LLM if needed
-                    result = self._direct_translate(edit, python_code)
-                    if not result.success:
-                        return self._llm_translate(edit, semiformal_code, python_code)
-                    return result
-                elif strategy == 'llm':
-                    # NL or complex semantic change - use LLM
-                    return self._llm_translate(edit, semiformal_code, python_code)
-
-        # Fallback: Route based on edit type (legacy behavior)
-        if self._is_direct_translatable(edit):
-            return self._direct_translate(edit, python_code)
-        elif self._is_hole_fill(edit):
-            return self._fill_hole_edit(edit, semiformal_code, python_code)
-        elif self._needs_placeholder(edit):
-            return self._add_placeholder(edit, python_code)
-        elif self._needs_llm(edit):
-            return self._llm_translate(edit, semiformal_code, python_code)
-        else:
-            # Default: mark for regeneration
-            return EditResult(
-                success=True,
-                new_code=python_code,
-                message=f"Edit type '{edit.type}' requires regeneration",
-                needs_regeneration=True,
-                regeneration_targets=[edit.location]
-            )
+        # Step 1: Infer edit type if not provided
+        if not edit.type:
+            semiformal_lines = semiformal_code.split('\n')
+            current_line = semiformal_lines[edit.line] if edit.line is not None and edit.line < len(semiformal_lines) else edit.content
+            old_line = edit.old_content if edit.old_content else None
+            
+            edit.type = self.edit_inferrer.infer_edit_type(edit, current_line, old_line)
+        
+        print(f"[EditTranslator] Edit type: {edit.type}")
+        
+        # Step 2: Route based on edit type
+        # Python statement edits → try direct edit first
+        if edit.type in ('python_statement_edit', 'python_assignment_edit', 'python_expression_edit',
+                          'identifier_rename', 'operator_change', 'literal_change', 'python_function_def_edit'):
+            result = self._direct_translate(edit, python_code)
+            if result.success:
+                return result
+            # If direct edit fails, fall back to regeneration
+            print(f"[EditTranslator] Direct edit failed, falling back to LLM regeneration")
+        
+        # NL/hole edits or failed direct edits → use LLM regeneration
+        return self._llm_translate(edit, semiformal_code, python_code)
 
     def _is_direct_translatable(self, edit: Edit) -> bool:
         """
@@ -177,26 +279,14 @@ class EditTranslator:
 
     def _direct_translate(self, edit: Edit, python_code: str) -> EditResult:
         """
-        Translate using direct AST manipulation.
-
-        Phase 1: Direct operations
+        Translate using direct AST manipulation or line replacement.
+        
+        Strategy:
+        - For identified edit types (rename, operator, literal): use specific operations
+        - For generic Python statement edits: replace the entire line
         """
+        # Specific edit types with dedicated operations
         if edit.type == 'identifier_rename':
-            return self.direct_ops.rename_identifier(
-                python_code,
-                edit.old_content or edit.location,
-                edit.content
-            )
-
-        elif edit.type == 'function_rename':
-            return self.direct_ops.rename_identifier(
-                python_code,
-                edit.old_content or edit.location,
-                edit.content
-            )
-
-        elif edit.type == 'parameter_rename':
-            func_name = edit.metadata.get('function_name', '')
             return self.direct_ops.rename_identifier(
                 python_code,
                 edit.old_content or edit.location,
@@ -218,154 +308,23 @@ class EditTranslator:
                 edit.old_content,
                 edit.content
             )
-
-        elif edit.type == 'parameter_add':
-            return self.direct_ops.add_parameter(
-                python_code,
-                edit.location,
-                edit.content
-            )
-
-        elif edit.type == 'parameter_remove':
-            return self.direct_ops.remove_parameter(
-                python_code,
-                edit.location,
-                edit.content
-            )
-
-        elif edit.type == 'parameter_reorder':
-            new_order = edit.metadata.get('new_order', [])
-            return self.direct_ops.reorder_parameters(
-                python_code,
-                edit.location,
-                new_order
-            )
-
-        elif edit.type == 'statement_insert':
-            indent = edit.metadata.get('indent', 0)
-            return self.direct_ops.insert_statement(
-                python_code,
-                edit.line or 0,
-                edit.content,
-                indent
-            )
-
-        elif edit.type == 'statement_delete':
-            return self.direct_ops.delete_statement(
-                python_code,
-                edit.line or 0
-            )
-
-        else:
-            return EditResult(
-                success=False,
-                new_code=python_code,
-                message=f"Unknown direct edit type: {edit.type}"
-            )
-
-    def _is_hole_fill(self, edit: Edit) -> bool:
-        """
-        Check if this is filling a hole.
-
-        Uses configuration instead of hardcoded list.
-        """
-        return edit.type in self.config.edit_types.hole_edit_types
-
-    def _fill_hole_edit(
-        self,
-        edit: Edit,
-        semiformal_code: str,
-        python_code: str
-    ) -> EditResult:
-        """
-        Fill a hole using LLM (LLM call #1: code generation).
-        """
-        hint = edit.content
-        target_var = edit.metadata.get('target_var')
-
-        # Generate code to fill the hole (uses LLM call #1)
-        filled_code = self.generator.fill_hole(hint, semiformal_code, target_var)
-
-        # Insert at the appropriate location
-        line_num = edit.line or 0
-        lines = python_code.split('\n')
-
-        if line_num < len(lines):
-            indent = len(lines[line_num]) - len(lines[line_num].lstrip())
-            if target_var:
-                new_line = ' ' * indent + f"{target_var} = {filled_code}"
-            else:
-                new_line = ' ' * indent + filled_code
-
-            lines[line_num] = new_line
-            new_code = '\n'.join(lines)
-
-            return EditResult(
-                success=True,
-                new_code=new_code,
-                message=f"Filled hole with: {filled_code[:50]}..."
-            )
-        else:
-            return EditResult(
-                success=False,
-                new_code=python_code,
-                message=f"Line {line_num} out of range"
-            )
-
-    def _needs_placeholder(self, edit: Edit) -> bool:
-        """
-        Check if edit needs placeholder.
-
-        Phase 2: Placeholder support (18.3%)
-        Uses configuration instead of hardcoded list.
-        """
-        return edit.type in self.config.edit_types.placeholder_edit_types
-
-    def _add_placeholder(self, edit: Edit, python_code: str) -> EditResult:
-        """
-        Add placeholder for unknown values.
-
-        Phase 2: Placeholder support
-        """
-        if edit.type == 'identifier_add_lhs':
-            # Use direct operation which includes placeholder logic
-            return self.direct_ops.add_identifier_to_lhs(
-                python_code,
-                edit.line or 0,
-                edit.content
-            )
-
-        elif edit.type in ('argument_add', 'variable_incomplete'):
-            # Create a simple placeholder comment
-            line_num = edit.line or 0
-            lines = python_code.split('\n')
-
-            if line_num < len(lines):
-                indent = len(lines[line_num]) - len(lines[line_num].lstrip())
-                placeholder_line = ' ' * indent + f"# TODO: {edit.content} = <placeholder>"
-                lines.insert(line_num, placeholder_line)
-
-                return EditResult(
-                    success=True,
-                    new_code='\n'.join(lines),
-                    message=f"Added placeholder for: {edit.content}",
-                    needs_regeneration=True
+        
+        # Generic Python statement edit - replace the line directly
+        elif edit.type in ('python_statement_edit', 'python_assignment_edit', 
+                           'python_expression_edit', 'python_function_def_edit'):
+            if edit.line is not None:
+                return self.direct_ops.replace_statement(
+                    python_code,
+                    edit.line,
+                    edit.content
                 )
-
+        
+        # Unsupported edit type for direct translation
         return EditResult(
             success=False,
             new_code=python_code,
-            message=f"Unsupported placeholder type: {edit.type}"
+            message=f"Cannot directly translate edit type: {edit.type}"
         )
-
-    def _needs_llm(self, edit: Edit) -> bool:
-        """
-        Check if edit needs LLM.
-
-        Phase 3: LLM integration (21.1%)
-        Uses configuration instead of hardcoded list.
-        """
-        return edit.type in self.config.edit_types.llm_edit_types
 
     def _llm_translate(
         self,
@@ -376,14 +335,15 @@ class EditTranslator:
         """
         Translate using LLM for complex semantic changes.
         
-        Uses single LLM call with diff format generation.
+        Uses single LLM call with diff format generation, but focuses the prompt
+        on the nodes/regions actually touched by the edit.
         """
-        # Re-parse semiformal code to get updated nodes
+        # Re-parse semiformal code to get updated nodes (AFTER the edit)
         try:
             from parser import SemiformalParser
             parser = SemiformalParser()
             nodes = parser.parse(semiformal_code)
-        except:
+        except Exception:
             # Fallback: mark for regeneration
             return EditResult(
                 success=True,
@@ -392,18 +352,62 @@ class EditTranslator:
                 needs_regeneration=True,
                 regeneration_targets=[edit.location]
             )
-        
-        # Use single LLM call with existing Python code (diff mode)
+
+        # Compute a focused set of nodes affected by this edit in the *new* IR.
+        # We primarily use the line number, falling back to simple content match.
+        focus_nodes = []
+        if edit.line is not None:
+            for node in nodes:
+                if hasattr(node, "span") and node.span:
+                    if node.span[0] <= edit.line <= node.span[1]:
+                        focus_nodes.append(node)
+
+        if not focus_nodes and edit.content:
+            content_str = str(edit.content).strip()
+            for node in nodes:
+                if getattr(node, "content", "") == content_str:
+                    focus_nodes.append(node)
+
+        # Determine a coarse trigger type to help the LLM understand context.
+        trigger_type = "semiformal_llm_edit"
+        if self.classifier and focus_nodes:
+            # If we have a classifier, refine trigger_type based on completeness.
+            try:
+                strategy = self.classifier.get_edit_strategy(focus_nodes)
+                if strategy == "direct":
+                    trigger_type = "complete_python_edit"
+                elif strategy == "hybrid":
+                    trigger_type = "incomplete_python_hybrid_edit"
+                elif strategy == "llm":
+                    trigger_type = "nl_or_hole_edit"
+            except Exception:
+                # Fall back silently if anything goes wrong
+                trigger_type = "semiformal_llm_edit"
+
+        # Thread the previous semiformal spec through to the generator/LLM so
+        # prompts can show a before/after view when available.
+        previous_semiformal = edit.metadata.get("previous_semiformal_code", "")
+
+        # Use single LLM call with existing Python code (diff mode), telling the
+        # generator which nodes to focus on.
         new_code, mappings = self.generator.generate_with_mapping(
             nodes=nodes,
             context=semiformal_code,
-            existing_python=python_code  # Pass existing code for diff generation
+            existing_python=python_code,  # Pass existing code for diff generation
+            focus_nodes=focus_nodes or None,
+            trigger_type=trigger_type,
+            previous_semiformal=previous_semiformal,
         )
-        
+
+        # Refresh internal mapping table so future edits see the updated layout.
+        self.mappings = {m.node_id: m for m in mappings}
+
         return EditResult(
             success=True,
             new_code=new_code,
-            message=f"Generated code using LLM for '{edit.type}'"
+            message=f"Generated code using LLM for '{edit.type}'",
+            new_nodes=nodes,
+            new_mappings=mappings,
         )
 
 
@@ -428,6 +432,10 @@ class UpdateDecider:
         Returns:
             (should_propagate, strategy)
         """
+        # Treat generic Python-side line edits as transient by default
+        if edit.metadata.get("from_side") == "python":
+            return False, "none"
+
         # Check if it's a transient edit (don't propagate)
         if any(pattern in edit.type for pattern in self.config.edit_types.transient_patterns):
             return False, 'none'

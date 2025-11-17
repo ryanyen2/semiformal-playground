@@ -9,7 +9,7 @@
  */
 
 import { EditorView } from '@codemirror/view'
-import { createEditor, getEditorContent } from './editor'
+import { createEditor, getEditorContent, detectChanges, type ChangeInfo } from './editor'
 import {
   nodeDecorationsField,
   nodesStateField,
@@ -46,6 +46,8 @@ let isParsing = false
 // Current state
 let currentNodes: IntentNode[] = []
 let currentMappings: NodeMapping[] = []
+let lastSpecCode = ''
+let lastPythonCode = ''
 let hasLLM = false
 
 /**
@@ -95,9 +97,10 @@ function setLLMStatus(available: boolean) {
 }
 
 /**
- * Parse semiformal code (debounced)
+ * Apply a semiformal edit through the unified /edit/semiformal endpoint.
+ * The backend decides whether this is an initial generation or a refinement.
  */
-async function parseCode(semiformalCode: string) {
+async function applySemiformalEdit(oldCode: string, newCode: string) {
   if (isParsing) return
   isParsing = true
 
@@ -105,33 +108,61 @@ async function parseCode(semiformalCode: string) {
     setSpecStatus('Parsing...', 'parsing')
     setStatusMessage('Parsing semiformal code...', 'parsing')
 
-    const result = await api.initialize(semiformalCode)
+    const newLines = newCode.split('\n')
+    const oldLines = oldCode.split('\n')
 
-    currentNodes = result.nodes
-    currentMappings = result.mappings
+    // Compute a minimal change description to send to the backend.
+    let change: ChangeInfo | null = null
+    if (oldCode && oldCode !== newCode) {
+      change = detectChanges(oldCode, newCode)
+    }
 
-    // Update Python code editor with generated code
+    const hasPrevious = !!oldCode
+    const fromLine = change ? change.fromLine : 0
+    const newLineText = newLines[fromLine] ?? ''
+    const oldLineText = hasPrevious ? oldLines[fromLine] ?? '' : undefined
+
+    const editResult = await api.editSemiformal(
+      String(fromLine),
+      newLineText,
+      newCode,
+      oldLineText,
+      fromLine,
+      {
+        from_side: 'semiformal'
+      }
+    )
+
+    // Update Python code editor with generated/refined code
     codeEditor.dispatch({
       changes: {
         from: 0,
         to: codeEditor.state.doc.length,
-        insert: result.python_code
+        insert: editResult.python_code
       }
     })
 
+    lastSpecCode = newCode
+    lastPythonCode = editResult.python_code
+
+    // Refresh nodes and mappings from backend state so mapping/AST stay in sync
+    const state = await api.getState()
+    currentNodes = state.nodes
+    currentMappings = state.mappings
+
     // Update decorations
-    updateNodeDecorations(specEditor, result.nodes)
+    updateNodeDecorations(specEditor, currentNodes)
 
     // Update AST viewer
-    astViewer.updateTree(result.nodes, result.mappings)
+    astViewer.updateTree(currentNodes, currentMappings)
 
     // Update UI
-    setNodeCount(result.nodes.length)
+    setNodeCount(currentNodes.length)
     setSpecStatus('Parsed', '')
     setCodeStatus('Generated', '')
-    setStatusMessage(result.message, 'success')
+    setStatusMessage(editResult.message, 'success')
 
-    console.log('Parse result:', result)
+    console.log('Semiformal edit result:', editResult)
   } catch (error) {
     console.error('Parse error:', error)
     setSpecStatus('Parse error', '')
@@ -142,6 +173,13 @@ async function parseCode(semiformalCode: string) {
   } finally {
     isParsing = false
   }
+}
+
+/**
+ * Parse semiformal code (debounced) using the unified edit pipeline.
+ */
+async function parseCode(semiformalCode: string) {
+  await applySemiformalEdit(lastSpecCode, semiformalCode)
 }
 
 /**
@@ -157,32 +195,9 @@ async function generateCode() {
     setCodeStatus('Generating...', 'generating')
     setStatusMessage('Generating Python code...', 'generating')
 
-    const result = await api.initialize(semiformalCode)
+    await applySemiformalEdit(lastSpecCode, semiformalCode)
 
-    // Update code editor
-    codeEditor.dispatch({
-      changes: {
-        from: 0,
-        to: codeEditor.state.doc.length,
-        insert: result.python_code
-      }
-    })
-
-    currentNodes = result.nodes
-    currentMappings = result.mappings
-
-    // Update decorations
-    updateNodeDecorations(specEditor, result.nodes)
-
-    // Update AST viewer
-    astViewer.updateTree(result.nodes, result.mappings)
-
-    // Update UI
     setCodeStatus('Generated', '')
-    setStatusMessage(result.message, 'success')
-    setNodeCount(result.nodes.length)
-
-    console.log('Generation result:', result)
   } catch (error) {
     console.error('Generation error:', error)
     setCodeStatus('Generation error', '')
@@ -419,7 +434,9 @@ async function init() {
   console.log('Initialization complete!')
   setStatusMessage('Ready. Type to parse (auto-debounced) • Cmd+S to generate', 'success')
 
-  // Initial parse
+  // Initial parse (treated as first edit with no previous code)
+  lastSpecCode = ''
+  lastPythonCode = ''
   parseCode(EXAMPLE_SPEC)
 }
 

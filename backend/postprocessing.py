@@ -61,17 +61,13 @@ class CodePostprocessor:
         
         # Step 3: Build SDG (System Dependence Graph)
         sdg = self.build_sdg(code_ast, final_code)
-        print(sdg)
         
         # Step 4: Extract anchor map (anchor → AST nodes)
         anchor_map = self.extract_anchor_map(code_ast, final_code)
-        print(anchor_map)
         # Step 5: Build mapping (semiformal nodes → code)
         if parsed_nodes:
             mapping = self.build_node_mapping(parsed_nodes, anchor_map, code_ast, sdg)
             coverage = self.compute_coverage(mapping, code_ast)
-            print(mapping)
-            print(coverage)
         else:
             mapping = {}
             coverage = 0.0

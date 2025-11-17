@@ -22,6 +22,10 @@ class EditResult:
     message: str
     needs_regeneration: bool = False
     regeneration_targets: List[str] = None
+    # Optional richer information for higher-level orchestrators (editor/translator)
+    # to update IR nodes and mappings after LLM-based regeneration.
+    new_nodes: Optional[List] = None
+    new_mappings: Optional[List] = None
 
     def __post_init__(self):
         if self.regeneration_targets is None:
@@ -640,4 +644,47 @@ class DirectEditOperations:
             success=True,
             new_code='\n'.join(lines),
             message=f"Deleted statement at line {line_num}: {deleted_line.strip()}"
+        )
+    
+    @staticmethod
+    def replace_statement(code: str, line_num: int, new_statement: str) -> EditResult:
+        """
+        Replace a statement at a specific line with new content.
+        
+        This preserves all other lines, fixing the "code disappearing" issue.
+        Only the target line is modified.
+        
+        Args:
+            code: Current Python code
+            line_num: Line number to replace (0-indexed)
+            new_statement: New statement content
+            
+        Returns:
+            EditResult with updated code
+        """
+        lines = code.split('\n')
+        if line_num >= len(lines):
+            return EditResult(
+                success=False,
+                new_code=code,
+                message=f"Line {line_num} out of range (code has {len(lines)} lines)"
+            )
+        
+        old_line = lines[line_num]
+        
+        # Preserve indentation from old line if new statement doesn't have it
+        old_indent = len(old_line) - len(old_line.lstrip())
+        new_indent = len(new_statement) - len(new_statement.lstrip())
+        
+        if new_indent == 0 and old_indent > 0:
+            # New statement has no indentation, but old one did - preserve it
+            new_statement = ' ' * old_indent + new_statement.lstrip()
+        
+        # Replace the line
+        lines[line_num] = new_statement
+        
+        return EditResult(
+            success=True,
+            new_code='\n'.join(lines),
+            message=f"Replaced line {line_num}: '{old_line.strip()}' → '{new_statement.strip()}'"
         )

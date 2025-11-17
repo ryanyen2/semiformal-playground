@@ -108,10 +108,17 @@ class BidirectionalEditor:
         Returns:
             Dict with updated python_code and result info
         """
+        # If this is the first interaction, lazily initialize the editor state
+        # from the current semiformal code. From the caller's perspective this
+        # still looks like a normal "edit" (no separate initialize step).
         if not self.translator:
+            init_result = self.initialize(self.semiformal_code)
             return {
-                'success': False,
-                'message': 'Editor not initialized. Call initialize() first.'
+                'success': True,
+                'python_code': init_result['python_code'],
+                'message': init_result['message'],
+                'needs_regeneration': False,
+                'regeneration_targets': [],
             }
 
         # Translate to Python edit
@@ -120,14 +127,21 @@ class BidirectionalEditor:
             self.semiformal_code,
             self.python_code
         )
+        print('editor result', result)
 
         if result.success:
             # Apply the edit
             self.python_code = result.new_code
 
-            # Update mappings if needed
-            if result.needs_regeneration:
-                self._handle_regeneration(result.regeneration_targets)
+            # If the LLM pipeline returned updated nodes/mappings, refresh them
+            # so /state and the frontend mapping stay in sync.
+            # Regeneration is now handled directly in EditTranslator._llm_translate
+            if result.new_nodes is not None:
+                self.intent_nodes = result.new_nodes  # type: ignore[assignment]
+            if result.new_mappings is not None:
+                self.mappings = result.new_mappings  # type: ignore[assignment]
+                # Update translator's internal mapping dict
+                self.translator.mappings = {m.node_id: m for m in self.mappings}
 
         return {
             'success': result.success,
@@ -207,13 +221,8 @@ class BidirectionalEditor:
             }
 
         # Semantic change - should propagate
-        # Only use LLM for generating suggestions if it's a complex semantic change
-        # For simple changes, just provide a basic suggestion
-        if strategy == 'llm' and self.generator.client:
-            suggestion = self._generate_semiformal_suggestion(edit)
-        else:
-            # Simple suggestion without LLM
-            suggestion = f"# Suggested: {edit.type} - {edit.content}"
+        # Provide a simple suggestion for the user to update semiformal code
+        suggestion = f"# Update semiformal code to reflect: {edit.content}"
 
         return {
             'success': True,
@@ -224,116 +233,7 @@ class BidirectionalEditor:
             'python_code': self.python_code
         }
 
-    def apply_direct_edit(
-        self,
-        edit_type: str,
-        **kwargs
-    ) -> Dict[str, Any]:
-        """
-        Apply a direct edit operation.
-
-        Convenience method for common direct edits.
-
-        Args:
-            edit_type: Type of edit (rename, add_param, etc.)
-            **kwargs: Edit-specific arguments
-
-        Returns:
-            Dict with result info
-        """
-        edit = Edit(
-            type=edit_type,
-            location=kwargs.get('location', ''),
-            content=kwargs.get('content', ''),
-            old_content=kwargs.get('old_content'),
-            line=kwargs.get('line'),
-            metadata=kwargs.get('metadata', {})
-        )
-
-        return self.on_semiformal_edit(edit)
-
-    def fill_hole(
-        self,
-        line_num: int,
-        hint: str = "",
-        target_var: Optional[str] = None
-    ) -> Dict[str, Any]:
-        """
-        Fill a hole on a specific line.
-
-        Phase 3: Hole filling
-
-        Args:
-            line_num: Line number with the hole
-            hint: Optional hint for LLM
-            target_var: Variable being assigned to
-
-        Returns:
-            Dict with filled code
-        """
-        edit = Edit(
-            type='hole_fill',
-            location=str(line_num),
-            content=hint,
-            line=line_num,
-            metadata={'target_var': target_var}
-        )
-
-        if not self.translator:
-            return {
-                'success': False,
-                'message': 'Editor not initialized'
-            }
-
-        result = self.translator.semiformal_to_python(
-            edit,
-            self.semiformal_code,
-            self.python_code
-        )
-
-        if result.success:
-            self.python_code = result.new_code
-
-        return {
-            'success': result.success,
-            'python_code': self.python_code,
-            'message': result.message
-        }
-
-    def regenerate(self, target: Optional[str] = None) -> Dict[str, Any]:
-        """
-        Regenerate code for a specific target or entire code.
-
-        Args:
-            target: Optional function name or section to regenerate
-
-        Returns:
-            Dict with regenerated code
-        """
-        # Re-parse semiformal code
-        self.intent_nodes = self.parser.parse(self.semiformal_code)
-
-        # Re-generate Python (use diff mode if we have existing code)
-        self.python_code, self.mappings = self.generator.generate_with_mapping(
-            self.intent_nodes,
-            context=self.semiformal_code,
-            existing_python=self.python_code if self.python_code else ""  # Use diff mode if code exists
-        )
-
-        # Update translator with completeness classification
-        self.translator = EditTranslator(
-            self.mappings,
-            self.generator,
-            self.config,
-            self.intent_nodes  # Pass nodes for completeness-based routing
-        )
-
-        return {
-            'success': True,
-            'python_code': self.python_code,
-            'message': f'Regenerated {"entire code" if not target else target}'
-        }
-
+   
     def get_state(self) -> Dict[str, Any]:
         """
         Get current editor state.
@@ -348,26 +248,6 @@ class BidirectionalEditor:
             'mappings': [self._mapping_to_dict(mapping) for mapping in self.mappings],
             'has_llm': getattr(self.generator.llm_service, "client", None) is not None
         }
-
-    def _handle_regeneration(self, targets: List[str]):
-        """Handle regeneration of specific targets"""
-        # For now, regenerate entire code
-        # Production would regenerate only affected sections
-        if targets:
-            print(f"Regeneration needed for: {', '.join(targets)}")
-            # TODO: Implement targeted regeneration
-
-    def _generate_semiformal_suggestion(self, edit: Edit) -> str:
-        """
-        Generate a suggestion for updating semiformal code.
-
-        Uses LLM to summarize Python change in natural language.
-        """
-        if not self.generator.client:
-            return f"# TODO: Update semiformal for edit: {edit.type}"
-
-        # For now, simple suggestion
-        return f"# Suggested: {edit.type} - {edit.content}"
 
     def _node_to_dict(self, node: IntentNode) -> Dict[str, Any]:
         """Convert IntentNode to dict for JSON serialization"""

@@ -160,6 +160,7 @@ class CompletenessClassifier:
             return 'direct'
 
         classifications = [self.classify(node) for node in affected_nodes]
+        print(f"Classifications: {classifications}")
 
         # All complete → Direct AST manipulation
         if all(c == NodeCompleteness.COMPLETE for c in classifications):

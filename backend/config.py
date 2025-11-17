@@ -71,7 +71,6 @@ class EditTypeConfig:
     llm_edit_types: List[str] = field(default_factory=lambda: [
         'nl_phrase_add',
         'nl_phrase_modify',
-        'semantic_change',
         'add_function_body',
         'extract_function',
         'inline_function',
@@ -87,6 +86,7 @@ class EditTypeConfig:
         'reorder_imports',
         'add_type_hint',
         'format_code',
+        'python_line_edit',
     ])
 
     # Semantic changes (must propagate Python → Semiformal)

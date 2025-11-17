@@ -48,7 +48,6 @@ class InitializeResponse(BaseModel):
 
 
 class EditRequest(BaseModel):
-    edit_type: str
     location: str
     content: str
     old_content: Optional[str] = None
@@ -63,29 +62,6 @@ class EditResponse(BaseModel):
     message: str
     needs_regeneration: bool = False
     regeneration_targets: List[str] = []
-
-
-class FillHoleRequest(BaseModel):
-    line_num: int
-    hint: Optional[str] = ""
-    target_var: Optional[str] = None
-
-
-class FillHoleResponse(BaseModel):
-    success: bool
-    python_code: str
-    message: str
-
-
-class RegenerateRequest(BaseModel):
-    target: Optional[str] = None  # Function name or None for full regeneration
-    semiformal_code: str
-
-
-class RegenerateResponse(BaseModel):
-    success: bool
-    python_code: str
-    message: str
 
 
 class StateResponse(BaseModel):
@@ -103,9 +79,9 @@ async def root():
     """Health check endpoint."""
     return {
         "status": "ok",
-        "service": "Semiformal Programming MVP API",
-        "version": "1.0.0-mvp",
-        "phases": ["Phase 1: Direct AST edits", "Phase 2: Placeholder support", "Phase 3: Hole syntax + LLM"],
+        "service": "Semiformal Programming API",
+        "version": "1.0.0",
+        "phases": ["Phase 1: Direct AST edits", "Phase 2: LLM-based code generation"],
         "has_openai": OPENAI_API_KEY is not None
     }
 
@@ -144,7 +120,6 @@ async def edit_semiformal(request: EditRequest):
     - Hole filling: LLM-based code generation
 
     Args:
-        edit_type: Type of edit (see EDIT_MAPPING_TABLE.md)
         location: Location of edit (function name, line num, etc.)
         content: New content
         old_content: Previous content (for renames)
@@ -160,18 +135,32 @@ async def edit_semiformal(request: EditRequest):
         - regeneration_targets: What needs regeneration
     """
     try:
-        # Update semiformal code state
+        previous_semiformal = editor.semiformal_code
         editor.semiformal_code = request.semiformal_code
 
-        # Create edit object
+        metadata: Dict[str, Any] = request.metadata or {}
+        if "previous_semiformal_code" not in metadata:
+            metadata["previous_semiformal_code"] = previous_semiformal
+
+        if editor.translator is None:
+            init_result = editor.initialize(request.semiformal_code)
+            return EditResponse(
+                success=True,
+                python_code=init_result["python_code"],
+                message=init_result["message"],
+                needs_regeneration=False,
+                regeneration_targets=[],
+            )
+
         edit = Edit(
-            type=request.edit_type,
             location=request.location,
             content=request.content,
             old_content=request.old_content,
             line=request.line,
-            metadata=request.metadata or {}
+            metadata=metadata
         )
+
+        print('edit', edit)
 
         # Apply edit
         result = editor.on_semiformal_edit(edit)
@@ -190,7 +179,6 @@ async def edit_python(request: EditRequest):
     Decides whether to propagate changes back to semiformal code.
 
     Args:
-        edit_type: Type of edit
         location: Location of edit
         content: New content
         line: Line number
@@ -203,7 +191,6 @@ async def edit_python(request: EditRequest):
     """
     try:
         edit = Edit(
-            type=request.edit_type,
             location=request.location,
             content=request.content,
             old_content=request.old_content,
@@ -216,63 +203,6 @@ async def edit_python(request: EditRequest):
 
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Python edit error: {str(e)}")
-
-
-@app.post("/fill-hole", response_model=FillHoleResponse)
-async def fill_hole(request: FillHoleRequest):
-    """
-    Fill a hole using LLM.
-
-    Phase 3: Hole syntax support
-
-    Args:
-        line_num: Line number containing the hole
-        hint: Optional hint text from {hint}
-        target_var: Variable being assigned to
-
-    Returns:
-        - success: Whether hole was filled
-        - python_code: Updated Python code
-        - message: Result message
-    """
-    try:
-        result = editor.fill_hole(
-            line_num=request.line_num,
-            hint=request.hint or "",
-            target_var=request.target_var
-        )
-
-        return FillHoleResponse(**result)
-
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Hole filling error: {str(e)}")
-
-
-@app.post("/regenerate", response_model=RegenerateResponse)
-async def regenerate(request: RegenerateRequest):
-    """
-    Regenerate code for a target or entire codebase.
-
-    Args:
-        target: Optional function name to regenerate (None = full regeneration)
-        semiformal_code: Updated semiformal code
-
-    Returns:
-        - success: Whether regeneration succeeded
-        - python_code: Regenerated Python code
-        - message: Result message
-    """
-    try:
-        # Update semiformal code
-        editor.semiformal_code = request.semiformal_code
-
-        # Regenerate
-        result = editor.regenerate(target=request.target)
-
-        return RegenerateResponse(**result)
-
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Regeneration error: {str(e)}")
 
 
 @app.get("/state", response_model=StateResponse)
@@ -294,36 +224,9 @@ async def get_state():
         raise HTTPException(status_code=500, detail=f"State retrieval error: {str(e)}")
 
 
-@app.post("/direct-edit/{operation}")
-async def apply_direct_edit(operation: str, **kwargs):
-    """
-    Apply a direct edit operation.
-
-    Phase 1: Direct AST operations
-
-    Supported operations:
-    - rename: Rename identifier
-    - add_param: Add parameter to function
-    - remove_param: Remove parameter
-    - change_operator: Change operator
-    - change_literal: Change literal value
-    - insert_statement: Insert statement
-    - delete_statement: Delete statement
-
-    Returns:
-        Result of the edit operation
-    """
-    try:
-        result = editor.apply_direct_edit(operation, **kwargs)
-        return result
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Direct edit error: {str(e)}")
-
 
 if __name__ == "__main__":
     import uvicorn
 
     port = int(os.getenv("PORT", 8000))
-    print(f"Starting MVP API server on port {port}")
-    print(f"OpenAI API key: {'configured' if OPENAI_API_KEY else 'NOT configured'}")
     uvicorn.run(app, host="0.0.0.0", port=port)

@@ -41,18 +41,6 @@ export interface PythonEditResponse {
   suggestion?: string
 }
 
-export interface FillHoleResponse {
-  success: boolean
-  python_code: string
-  message: string
-}
-
-export interface RegenerateResponse {
-  success: boolean
-  python_code: string
-  message: string
-}
-
 export interface StateResponse {
   semiformal_code: string
   python_code: string
@@ -85,7 +73,6 @@ export class APIClient {
    * Apply an edit to semiformal code.
    */
   async editSemiformal(
-    editType: string,
     location: string,
     content: string,
     semiformalCode: string,
@@ -97,7 +84,6 @@ export class APIClient {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        edit_type: editType,
         location,
         content,
         old_content: oldContent,
@@ -119,7 +105,6 @@ export class APIClient {
    * Handle an edit to Python code.
    */
   async editPython(
-    editType: string,
     location: string,
     content: string,
     oldContent?: string,
@@ -130,7 +115,6 @@ export class APIClient {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        edit_type: editType,
         location,
         content,
         old_content: oldContent,
@@ -142,53 +126,6 @@ export class APIClient {
     if (!response.ok) {
       const error = await response.json().catch(() => ({ detail: response.statusText }))
       throw new Error(`Python edit failed: ${error.detail || response.statusText}`)
-    }
-
-    return response.json()
-  }
-
-  /**
-   * Fill a hole using LLM.
-   */
-  async fillHole(
-    lineNum: number,
-    hint?: string,
-    targetVar?: string
-  ): Promise<FillHoleResponse> {
-    const response = await fetch(`${API_BASE}/fill-hole`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        line_num: lineNum,
-        hint: hint || '',
-        target_var: targetVar
-      })
-    })
-
-    if (!response.ok) {
-      const error = await response.json().catch(() => ({ detail: response.statusText }))
-      throw new Error(`Fill hole failed: ${error.detail || response.statusText}`)
-    }
-
-    return response.json()
-  }
-
-  /**
-   * Regenerate code for a target or entire codebase.
-   */
-  async regenerate(semiformalCode: string, target?: string): Promise<RegenerateResponse> {
-    const response = await fetch(`${API_BASE}/regenerate`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        semiformal_code: semiformalCode,
-        target
-      })
-    })
-
-    if (!response.ok) {
-      const error = await response.json().catch(() => ({ detail: response.statusText }))
-      throw new Error(`Regenerate failed: ${error.detail || response.statusText}`)
     }
 
     return response.json()

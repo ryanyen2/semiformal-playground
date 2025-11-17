@@ -343,7 +343,10 @@ class CodeGenerator:
         self,
         nodes: List[IntentNode],
         context: str = "",
-        existing_python: str = ""
+        existing_python: str = "",
+        focus_nodes: Optional[List[IntentNode]] = None,
+        trigger_type: str = "initial",
+        previous_semiformal: str = ""
     ) -> Tuple[str, List[Mapping]]:
         """
         Generate Python code from intent nodes using single LLM call.
@@ -359,12 +362,23 @@ class CodeGenerator:
         # Annotate semiformal code with parsed nodes
         annotated_semiformal = self._annotate_semiformal_with_nodes(context, nodes)
         
+        # Decide which IR nodes should be emphasized as targets for this call.
+        # For initialization / full generation we include all NL / hole / call nodes.
+        # For regeneration after an edit, the caller can pass a smaller focus_nodes set.
+        if focus_nodes:
+            target_ir_nodes = focus_nodes
+        else:
+            target_ir_nodes = [n for n in nodes if n.type in ('nl_phrase', 'hole', 'function_call')]
+
+        target_nodes_payload = [self._node_to_dict(n) for n in target_ir_nodes]
+        
         # Single LLM call: generate full code or diff
-        target_nodes = [self._node_to_dict(n) for n in nodes if n.type in ('nl_phrase', 'hole', 'function_call')]
         llm_output, success = self.llm_service.generate_code(
             annotated_semiformal=annotated_semiformal,
             existing_python=existing_python,
-            target_nodes=target_nodes if target_nodes else None
+            target_nodes=target_nodes_payload if target_nodes_payload else None,
+            trigger_type=trigger_type,
+            previous_semiformal=previous_semiformal,
         )
         
         if not success:
@@ -654,31 +668,3 @@ class CodeGenerator:
         # Fallback
         parts = [n.content for n in nodes]
         return ' '.join(parts)
-
-    def fill_hole(
-        self,
-        hint: str,
-        context: str,
-        target_var: Optional[str] = None
-    ) -> str:
-        """
-        Fill a hole with optional hint.
-        
-        Simplified version using single LLM call approach.
-        """
-        # Create a simple annotated semiformal code for the hole
-        annotated = f"{target_var} = {{ {hint} }}" if target_var else f"{{ {hint} }}"
-        annotated += f"  # [NODES: hole_node:hole[hint={hint}]]"
-        
-        target_nodes = [{'type': 'hole', 'content': hint, 'metadata': {'role': 'target' if target_var else None}}] if target_var else None
-        
-        code, success = self.llm_service.generate_code(
-            annotated_semiformal=annotated,
-            existing_python="",
-            target_nodes=target_nodes
-        )
-        
-        if not success:
-            return f"{target_var} = None  # TODO: Fill this placeholder" if target_var else "# TODO: Fill this"
-        
-        return code

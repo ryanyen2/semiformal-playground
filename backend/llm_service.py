@@ -49,7 +49,9 @@ class LLMService:
         self,
         annotated_semiformal: str,
         existing_python: str = "",
-        target_nodes: List[Dict[str, Any]] = None
+        target_nodes: List[Dict[str, Any]] = None,
+        trigger_type: str = "initial",
+        previous_semiformal: str = ""
     ) -> Tuple[str, bool]:
         """
         Generate Python code from annotated semiformal code.
@@ -69,8 +71,13 @@ class LLMService:
         if not self.client:
             return self._create_placeholder_from_nodes(target_nodes), False
         
-        prompt = self._build_unified_prompt(annotated_semiformal, existing_python, target_nodes)
-        print(prompt)
+        prompt = self._build_unified_prompt(
+            annotated_semiformal=annotated_semiformal,
+            existing_python=existing_python,
+            target_nodes=target_nodes,
+            trigger_type=trigger_type,
+            previous_semiformal=previous_semiformal,
+        )
         
         max_retries = self.config.generator.max_llm_retries
         for attempt in range(max_retries):
@@ -89,7 +96,6 @@ class LLMService:
                 )
                 
                 generated = response.choices[0].message.content.strip()
-                print(generated)
                 if not generated:
                     raise ValueError("LLM returned empty response")
                 
@@ -129,7 +135,9 @@ class LLMService:
         self,
         annotated_semiformal: str,
         existing_python: str = "",
-        target_nodes: List[Dict[str, Any]] = None
+        target_nodes: List[Dict[str, Any]] = None,
+        trigger_type: str = "initial",
+        previous_semiformal: str = ""
     ) -> str:
         """Build unified prompt for anchor-based code generation"""
         
@@ -138,13 +146,57 @@ class LLMService:
             "",
             "Generate Python code from semiformal specifications with **anchor comments** that enable precise traceability.",
             "",
+            "This is a *single* code-generation call. Use the trigger context below to decide how much of the code to change.",
+            "",
+            "## Trigger Context",
+            f"- Trigger type: `{trigger_type}`",
         ]
+
+        if previous_semiformal:
+            prompt_parts.extend(
+                [
+                    "- You are updating existing code based on a **changed semiformal spec** (see previous vs updated spec below).",
+                    "",
+                ]
+            )
+        else:
+            prompt_parts.extend(
+                [
+                    "- You are either generating code from scratch or updating code without an explicit previous spec.",
+                    "",
+                ]
+            )
         
         # Add mode-specific instructions
         if existing_python and existing_python.strip():
             prompt_parts.extend(_build_diff_mode_prompt(annotated_semiformal, existing_python))
         else:
             prompt_parts.extend(_build_full_generation_prompt(annotated_semiformal))
+
+        # If we have previous (before) semiformal spec, show it explicitly
+        if previous_semiformal:
+            prompt_parts.extend(
+                [
+                    "",
+                    "## Semiformal Specification (Before Edit)",
+                    "```",
+                    previous_semiformal.strip(),
+                    "```",
+                ]
+            )
+
+        # Always show the updated / current semiformal spec next (the annotated one
+        # is already shown inside the mode-specific block, but we repeat it in raw
+        # form so the model can see the plain text as well).
+        prompt_parts.extend(
+            [
+                "",
+                "## Semiformal Specification (After Edit, Annotated)",
+                "```",
+                annotated_semiformal.strip(),
+                "```",
+            ]
+        )
         
         # Add anchor rules (always included)
         prompt_parts.extend([
@@ -377,7 +429,7 @@ def _build_examples() -> List[str]:
         "#> result; load; dataset; process",
         "result = load the dataset and process it",
         "",
-        "# output; transform",
+        "# output; transform; result",
         "output = transform(result)",
         "",
         "# print; output",
@@ -394,7 +446,7 @@ def _build_examples() -> List[str]:
         "result = processed_data  #> result",
         "",
         "# Transform the result",
-        "output = result.apply(lambda x: x * 2)  #> output; transform",
+        "output = result.apply(lambda x: x * 2)  #> output; transform; result",
         "",
         "# Print output",
         "print(output)  #> print; output",
