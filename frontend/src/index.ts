@@ -167,11 +167,10 @@ async function init() {
   const specContainer = document.getElementById('spec-editor')
   if (!specContainer) throw new Error('Spec editor container not found')
 
-  specEditor = createEditor({
-    doc: EXAMPLE_SPEC,
-    parent: specContainer,
-    language: 'python',
-    extensions: [
+  specEditor = createEditor(
+    specContainer,
+    EXAMPLE_SPEC,
+    [
       keymap.of([
         {
           key: 'Mod-s',
@@ -187,26 +186,25 @@ async function init() {
           debouncedParse()
         }
       }),
-    ],
-  })
+    ]
+  )
 
   // Create code editor (right)
   const codeContainer = document.getElementById('code-editor')
   if (!codeContainer) throw new Error('Code editor container not found')
 
-  codeEditor = createEditor({
-    doc: '',
-    parent: codeContainer,
-    language: 'python',
-    extensions: [
+  codeEditor = createEditor(
+    codeContainer,
+    '',
+    [
       EditorView.updateListener.of((update) => {
         if (update.docChanged) {
           // Update mappings when code changes
           setTimeout(updateMappings, 500)
         }
       }),
-    ],
-  })
+    ]
+  )
 
   // Create AST viewer
   const astContainer = document.getElementById('ast-viewer')
