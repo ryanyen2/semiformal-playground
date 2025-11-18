@@ -99,6 +99,10 @@ class LLMService:
                 if not generated:
                     raise ValueError("LLM returned empty response")
                 
+                print('\n================== generated ==================\n')
+                print(generated)
+                print('\n================== generated ==================\n')
+                
                 # Extract code or diff
                 if existing_python:
                     # Expecting git diff format
@@ -277,7 +281,20 @@ class LLMService:
     
     def _extract_diff(self, response: str) -> Optional[str]:
         """Extract git diff from response"""
-        # Look for diff markers
+        # Try to find diff in code block first (most reliable)
+        # Handle ```diff ... ``` with optional newlines
+        match = re.search(r'```\s*diff\s*\n(.*?)```', response, re.DOTALL)
+        if match:
+            return match.group(1).strip()
+        
+        # Try generic ``` block that contains diff markers
+        match = re.search(r'```\s*\n(.*?---.*?)\n?```', response, re.DOTALL)
+        if match:
+            content = match.group(1).strip()
+            if '---' in content and '+++' in content:
+                return content
+        
+        # Look for diff markers directly (not in code block)
         if '---' in response and '+++' in response:
             # Extract diff section
             lines = response.split('\n')
@@ -288,16 +305,13 @@ class LLMService:
                     break
             
             if diff_start is not None:
-                return '\n'.join(lines[diff_start:])
-        
-        # Try to find diff in code block
-        match = re.search(r'```diff\n(.*?)\n```', response, re.DOTALL)
-        if match:
-            return match.group(1)
-        
-        match = re.search(r'```\n(.*?---.*?)\n```', response, re.DOTALL)
-        if match:
-            return match.group(1)
+                # Find end of diff (either end of string or start of new markdown block)
+                diff_end = len(lines)
+                for i in range(diff_start + 1, len(lines)):
+                    if lines[i].strip().startswith('```'):
+                        diff_end = i
+                        break
+                return '\n'.join(lines[diff_start:diff_end]).strip()
         
         return None
     

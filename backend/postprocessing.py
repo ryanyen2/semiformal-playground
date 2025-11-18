@@ -159,48 +159,167 @@ class CodePostprocessor:
     def extract_diff_block(self, llm_output: str) -> str:
         """Extract diff from markdown code block"""
         
-        # Try ```diff ... ```
-        diff_block_pattern = r'```diff\n(.*?)```'
+        # Try ```diff ... ``` (with optional whitespace/newlines)
+        diff_block_pattern = r'```\s*diff\s*\n(.*?)```'
         matches = re.findall(diff_block_pattern, llm_output, re.DOTALL)
         
         if matches:
             return matches[0].strip()
         
-        # Try generic ``` block that looks like diff
-        generic_pattern = r'```\n(---.*?)```'
+        # Try generic ``` block that looks like diff (starts with --- or @@)
+        generic_pattern = r'```\s*\n(---.*?)```'
         matches = re.findall(generic_pattern, llm_output, re.DOTALL)
         
         if matches:
-            return matches[0].strip()
+            content = matches[0].strip()
+            # Verify it looks like a diff
+            if content.startswith('---') or '@@' in content:
+                return content
+        
+        # Try to find diff markers directly (--- and +++)
+        if '---' in llm_output and '+++' in llm_output:
+            # Extract from first --- to end or next markdown block
+            lines = llm_output.split('\n')
+            diff_start = None
+            for i, line in enumerate(lines):
+                if line.startswith('---'):
+                    diff_start = i
+                    break
+            
+            if diff_start is not None:
+                # Find end of diff (either end of string or start of new markdown block)
+                diff_end = len(lines)
+                for i in range(diff_start + 1, len(lines)):
+                    if lines[i].strip().startswith('```'):
+                        diff_end = i
+                        break
+                return '\n'.join(lines[diff_start:diff_end]).strip()
         
         # Assume the whole output is the diff
         return llm_output.strip()
     
     def _apply_unified_diff(self, original_lines: List[str], diff_text: str) -> List[str]:
-        """Apply unified diff format to original lines"""
+        """Apply unified diff format to original lines using context-aware matching"""
         
-        # Parse diff into hunks
+        # Parse diff into hunks with full context
         hunks = self._parse_unified_diff(diff_text)
         
         # Apply hunks in reverse order (to maintain line numbers)
         result_lines = original_lines.copy()
         
         for hunk in reversed(hunks):
-            start_line = hunk['old_start'] - 1  # Convert to 0-indexed
+            # Find the location using context matching
+            location = self._find_hunk_location(result_lines, hunk)
             
-            # Remove old lines
-            for _ in range(hunk['old_count']):
-                if start_line < len(result_lines):
-                    result_lines.pop(start_line)
+            if location is None:
+                # Fallback: use the line number from hunk header
+                location = hunk['old_start'] - 1
+                if location < 0:
+                    location = 0
+                if location >= len(result_lines):
+                    location = len(result_lines)
             
-            # Insert new lines
-            for new_line in reversed(hunk['new_lines']):
-                result_lines.insert(start_line, new_line)
+            # Process hunk lines in order
+            # Context lines are kept as-is, removed lines are deleted, added lines are inserted
+            current_pos = location
+            
+            for hunk_line in hunk['hunk_lines']:
+                if hunk_line['type'] == 'context':
+                    # Context line should match existing line - verify and advance
+                    expected = hunk_line['content'].rstrip('\n\r')
+                    
+                    # Skip empty lines in original if expected is not empty
+                    if expected.strip():  # Expected line is not empty
+                        while current_pos < len(result_lines) and result_lines[current_pos].strip() == '':
+                            current_pos += 1
+                    
+                    if current_pos < len(result_lines):
+                        # Verify context matches
+                        actual = result_lines[current_pos].rstrip('\n\r')
+                        if expected == actual or (not expected.strip() and not actual.strip()):
+                            # Match - advance
+                            current_pos += 1
+                        else:
+                            # Context mismatch - try to find matching line nearby
+                            found = False
+                            for offset in range(1, min(5, len(result_lines) - current_pos)):
+                                if current_pos + offset < len(result_lines):
+                                    candidate = result_lines[current_pos + offset].rstrip('\n\r')
+                                    if expected == candidate or (not expected.strip() and not candidate.strip()):
+                                        # Found match - skip to it
+                                        current_pos += offset + 1
+                                        found = True
+                                        break
+                            if not found:
+                                # No match found - still advance to avoid infinite loop
+                                # This might cause misalignment, but it's better than hanging
+                                current_pos += 1
+                    else:
+                        # Missing context line - insert it (shouldn't happen in valid diff)
+                        line_content = hunk_line['content']
+                        # Preserve newline format from original
+                        if current_pos > 0 and current_pos <= len(result_lines):
+                            # Use newline format from surrounding lines
+                            if result_lines[current_pos - 1].endswith('\n'):
+                                line_content += '\n'
+                        elif len(result_lines) > 0 and result_lines[-1].endswith('\n'):
+                            line_content += '\n'
+                        result_lines.insert(current_pos, line_content)
+                        current_pos += 1
+                
+                elif hunk_line['type'] == 'removed':
+                    # Remove this line from original
+                    expected = hunk_line['content'].rstrip('\n\r')
+                    
+                    # Skip empty lines if expected is not empty
+                    if expected.strip():
+                        while current_pos < len(result_lines) and result_lines[current_pos].strip() == '':
+                            current_pos += 1
+                    
+                    if current_pos < len(result_lines):
+                        # Verify it matches (for safety)
+                        actual = result_lines[current_pos].rstrip('\n\r')
+                        if expected == actual or (not expected.strip() and not actual.strip()):
+                            # Match - remove it
+                            result_lines.pop(current_pos)
+                        else:
+                            # Doesn't match exactly - try to find it nearby
+                            found = False
+                            for offset in range(0, min(5, len(result_lines) - current_pos)):
+                                if current_pos + offset < len(result_lines):
+                                    candidate = result_lines[current_pos + offset].rstrip('\n\r')
+                                    if expected == candidate:
+                                        # Found match - remove it
+                                        result_lines.pop(current_pos + offset)
+                                        found = True
+                                        break
+                            if not found:
+                                # Not found - remove current line anyway (might be formatting diff)
+                                result_lines.pop(current_pos)
+                    # Don't advance current_pos - we removed a line (or tried to)
+                
+                elif hunk_line['type'] == 'added':
+                    # Insert new line
+                    line_content = hunk_line['content']
+                    # Preserve newline format from original file
+                    # Check surrounding lines to determine newline format
+                    needs_newline = False
+                    if current_pos < len(result_lines):
+                        needs_newline = result_lines[current_pos].endswith('\n')
+                    elif current_pos > 0:
+                        needs_newline = result_lines[current_pos - 1].endswith('\n')
+                    elif len(result_lines) > 0:
+                        needs_newline = result_lines[-1].endswith('\n')
+                    
+                    if needs_newline and not line_content.endswith('\n'):
+                        line_content += '\n'
+                    result_lines.insert(current_pos, line_content)
+                    current_pos += 1
         
         return result_lines
     
     def _parse_unified_diff(self, diff_text: str) -> List[Dict[str, Any]]:
-        """Parse unified diff format into structured hunks"""
+        """Parse unified diff format into structured hunks with full context"""
         
         hunks = []
         current_hunk = None
@@ -208,38 +327,126 @@ class CodePostprocessor:
         lines = diff_text.split('\n')
         
         for line in lines:
-            # Match hunk header: @@ -start,count +start,count @@
-            hunk_match = re.match(r'@@ -(\d+),(\d+) \+(\d+),(\d+) @@', line)
+            # Skip diff header lines (---, +++)
+            if line.startswith('---') or line.startswith('+++'):
+                continue
+            
+            # Match hunk header: @@ -start,count +start,count @@ or @@ -start +start,count @@
+            # Handle both formats: with and without comma (single line changes)
+            hunk_match = re.match(r'@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@', line)
             
             if hunk_match:
                 # Save previous hunk
                 if current_hunk:
                     hunks.append(current_hunk)
                 
+                # Parse hunk header
+                old_start = int(hunk_match.group(1))
+                old_count = int(hunk_match.group(2)) if hunk_match.group(2) else 1
+                new_start = int(hunk_match.group(3))
+                new_count = int(hunk_match.group(4)) if hunk_match.group(4) else 1
+                
                 # Start new hunk
                 current_hunk = {
-                    'old_start': int(hunk_match.group(1)),
-                    'old_count': int(hunk_match.group(2)),
-                    'new_start': int(hunk_match.group(3)),
-                    'new_count': int(hunk_match.group(4)),
-                    'old_lines': [],
-                    'new_lines': [],
+                    'old_start': old_start,
+                    'old_count': old_count,
+                    'new_start': new_start,
+                    'new_count': new_count,
+                    'hunk_lines': [],  # List of {'type': 'context'|'removed'|'added', 'content': str}
                 }
             
             elif current_hunk:
-                if line.startswith('-') and not line.startswith('---'):
+                # Parse hunk content lines
+                if line.startswith(' '):
+                    # Context line (unchanged)
+                    current_hunk['hunk_lines'].append({
+                        'type': 'context',
+                        'content': line[1:]  # Remove leading space
+                    })
+                elif line.startswith('-'):
                     # Removed line
-                    current_hunk['old_lines'].append(line[1:] + '\n')
-                elif line.startswith('+') and not line.startswith('+++'):
+                    current_hunk['hunk_lines'].append({
+                        'type': 'removed',
+                        'content': line[1:]  # Remove leading -
+                    })
+                elif line.startswith('+'):
                     # Added line
-                    current_hunk['new_lines'].append(line[1:] + '\n')
-                # Context lines (starting with space) are ignored in simple patch
+                    current_hunk['hunk_lines'].append({
+                        'type': 'added',
+                        'content': line[1:]  # Remove leading +
+                    })
+                # Empty lines or other lines are ignored
         
         # Save last hunk
         if current_hunk:
             hunks.append(current_hunk)
         
         return hunks
+    
+    def _find_hunk_location(self, original_lines: List[str], hunk: Dict[str, Any]) -> Optional[int]:
+        """
+        Find the location in original_lines where this hunk should be applied.
+        Uses context matching like real patch tools.
+        
+        Returns:
+            Line index (0-based) where hunk should be applied, or None if not found
+        """
+        # Build a sequence of lines that should appear in the original file
+        # This includes context lines and removed lines (in order)
+        expected_sequence = []
+        for hunk_line in hunk['hunk_lines']:
+            if hunk_line['type'] in ('context', 'removed'):
+                # Both context and removed lines should be in the original
+                content = hunk_line['content'].rstrip('\n\r')
+                expected_sequence.append(content)
+        
+        if not expected_sequence:
+            # No context to match, use line number from hunk
+            return hunk['old_start'] - 1
+        
+        # Try to find matching sequence in original file
+        # Start searching from the expected location (hunk['old_start'] - 1)
+        expected_start = hunk['old_start'] - 1
+        
+        # Search in a window around the expected location (wider window for robustness)
+        search_start = max(0, expected_start - 20)
+        search_end = min(len(original_lines), expected_start + 20)
+        
+        for i in range(search_start, search_end - len(expected_sequence) + 1):
+            # Check if sequence matches at this position
+            # Use a more flexible matching that skips extra empty lines
+            match = True
+            orig_idx = i
+            for expected_line in expected_sequence:
+                # Skip empty lines in original if expected is not empty
+                while orig_idx < len(original_lines) and not expected_line.strip() and original_lines[orig_idx].strip() == '':
+                    orig_idx += 1
+                
+                if orig_idx >= len(original_lines):
+                    match = False
+                    break
+                
+                # Compare lines (strip newlines and carriage returns for comparison)
+                orig_line = original_lines[orig_idx].rstrip('\n\r')
+                expected_stripped = expected_line.rstrip('\n\r')
+                
+                # Allow empty lines to match any empty line
+                if not expected_stripped and not orig_line:
+                    orig_idx += 1
+                    continue
+                
+                if orig_line != expected_stripped:
+                    match = False
+                    break
+                
+                orig_idx += 1
+            
+            if match:
+                return i
+        
+        # If no match found, return expected location (fallback)
+        # This allows the patch to be applied even if context doesn't match exactly
+        return expected_start
     
     # ============================================================
     # Step 3: Build SDG

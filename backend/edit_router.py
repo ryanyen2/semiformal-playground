@@ -180,10 +180,13 @@ class EditTranslator:
             config: Configuration object (uses DEFAULT_CONFIG if None)
             nodes: IntentNode list for node type analysis
         """
-        self.mappings = {m.node_id: m for m in mappings}
+        # Keep both the original list and a fast lookup dict for mappings
+        self.mapping_list: List[Mapping] = mappings
+        self.mappings: dict[str, Mapping] = {m.node_id: m for m in mappings}
         self.generator = generator
         self.direct_ops = DirectEditOperations()
         self.config = config or DEFAULT_CONFIG
+        # IntentNode list used to locate affected nodes for an edit
         self.nodes = nodes or []
         self.edit_inferrer = EditTypeInferrer()
 
@@ -248,9 +251,13 @@ class EditTranslator:
         # Step 1: Infer edit type if not provided
         if not edit.type:
             semiformal_lines = semiformal_code.split('\n')
-            current_line = semiformal_lines[edit.line] if edit.line is not None and edit.line < len(semiformal_lines) else edit.content
+            current_line = (
+                semiformal_lines[edit.line]
+                if edit.line is not None and 0 <= edit.line < len(semiformal_lines)
+                else edit.content
+            )
             old_line = edit.old_content if edit.old_content else None
-            
+
             edit.type = self.edit_inferrer.infer_edit_type(edit, current_line, old_line)
         
         print(f"[EditTranslator] Edit type: {edit.type}")
@@ -277,6 +284,58 @@ class EditTranslator:
         """
         return edit.type in self.config.edit_types.direct_edit_types
 
+    def _resolve_python_line(self, edit: Edit, python_code: str) -> int:
+        """
+        Resolve the Python line number that should be edited for a given semiformal edit.
+
+        We *do not* assume that semiformal line numbers match Python line numbers.
+        Instead, we:
+          1. Find affected intent nodes in the IR
+          2. Look up their Mapping.slices[0].line_start to get the corresponding
+             Python line (1-based from mapping, convert to 0-based)
+        """
+        # If we don't have nodes or mappings, fall back to the raw edit.line
+        if not self.nodes or not self.mappings:
+            return edit.line or 0
+
+        affected_nodes = self._get_affected_nodes(edit)
+        best_line: Optional[int] = None
+
+        # Prefer expression / statement-like nodes on the edited line
+        preferred_types = {'expr_stmt', 'function_call', 'identifier', 'nl_phrase', 'hole'}
+
+        for node in affected_nodes:
+            mapping = self.mappings.get(getattr(node, "id", ""), None)
+            if not mapping or not mapping.slices:
+                continue
+
+            py_line_1_based = mapping.slices[0].line_start
+            if py_line_1_based <= 0:
+                continue
+
+            py_line_0_based = py_line_1_based - 1
+
+            if best_line is None:
+                best_line = py_line_0_based
+
+            # If this node type is more statement-like, prefer its line
+            if getattr(node, "type", "") in preferred_types:
+                best_line = py_line_0_based
+                break
+
+        # Fallback: use the original edit.line if mapping-based resolution failed
+        if best_line is None:
+            return edit.line or 0
+
+        # Clamp to valid range (defensive)
+        total_lines = len(python_code.split('\n'))
+        if best_line < 0:
+            return 0
+        if best_line >= total_lines:
+            return max(0, total_lines - 1)
+
+        return best_line
+
     def _direct_translate(self, edit: Edit, python_code: str) -> EditResult:
         """
         Translate using direct AST manipulation or line replacement.
@@ -285,6 +344,9 @@ class EditTranslator:
         - For identified edit types (rename, operator, literal): use specific operations
         - For generic Python statement edits: replace the entire line
         """
+        # Compute the Python line to operate on for line-based edits
+        target_line = self._resolve_python_line(edit, python_code) if edit.line is not None else None
+
         # Specific edit types with dedicated operations
         if edit.type == 'identifier_rename':
             return self.direct_ops.rename_identifier(
@@ -296,7 +358,7 @@ class EditTranslator:
         elif edit.type == 'operator_change':
             return self.direct_ops.change_operator(
                 python_code,
-                edit.line or 0,
+                target_line or 0,
                 edit.old_content or '',
                 edit.content
             )
@@ -304,7 +366,7 @@ class EditTranslator:
         elif edit.type == 'literal_change':
             return self.direct_ops.change_literal(
                 python_code,
-                edit.line or 0,
+                target_line or 0,
                 edit.old_content,
                 edit.content
             )
@@ -312,10 +374,10 @@ class EditTranslator:
         # Generic Python statement edit - replace the line directly
         elif edit.type in ('python_statement_edit', 'python_assignment_edit', 
                            'python_expression_edit', 'python_function_def_edit'):
-            if edit.line is not None:
+            if target_line is not None:
                 return self.direct_ops.replace_statement(
                     python_code,
-                    edit.line,
+                    target_line,
                     edit.content
                 )
         
@@ -369,20 +431,15 @@ class EditTranslator:
                     focus_nodes.append(node)
 
         # Determine a coarse trigger type to help the LLM understand context.
+        # We no longer rely on completeness classification here; instead we use
+        # simple heuristics based on the inferred edit type.
         trigger_type = "semiformal_llm_edit"
-        if self.classifier and focus_nodes:
-            # If we have a classifier, refine trigger_type based on completeness.
-            try:
-                strategy = self.classifier.get_edit_strategy(focus_nodes)
-                if strategy == "direct":
-                    trigger_type = "complete_python_edit"
-                elif strategy == "hybrid":
-                    trigger_type = "incomplete_python_hybrid_edit"
-                elif strategy == "llm":
-                    trigger_type = "nl_or_hole_edit"
-            except Exception:
-                # Fall back silently if anything goes wrong
-                trigger_type = "semiformal_llm_edit"
+        if edit.type:
+            et = edit.type.lower()
+            if "python" in et:
+                trigger_type = "complete_python_edit"
+            elif "hole" in et or "nl" in et:
+                trigger_type = "nl_or_hole_edit"
 
         # Thread the previous semiformal spec through to the generator/LLM so
         # prompts can show a before/after view when available.
@@ -399,8 +456,11 @@ class EditTranslator:
             previous_semiformal=previous_semiformal,
         )
 
-        # Refresh internal mapping table so future edits see the updated layout.
+        # Refresh internal mapping table and node list so future edits see the
+        # updated layout. Keep both list and dict variants in sync.
+        self.mapping_list = mappings
         self.mappings = {m.node_id: m for m in mappings}
+        self.nodes = nodes
 
         return EditResult(
             success=True,

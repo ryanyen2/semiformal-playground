@@ -78,7 +78,7 @@ class BidirectionalEditor:
             existing_python=""  # Empty for full generation
         )
 
-        # Step 3: Set up translator with completeness classification
+        # Step 3: Set up translator
         self.translator = EditTranslator(
             self.mappings,
             self.generator,
@@ -117,6 +117,35 @@ class BidirectionalEditor:
                 'success': True,
                 'python_code': init_result['python_code'],
                 'message': init_result['message'],
+                'needs_regeneration': False,
+                'regeneration_targets': [],
+            }
+
+        # Check if all semiformal code has been removed - if so, re-initialize
+        # to reset mappings and state. This handles the case where user deletes
+        # all content and we need to start fresh.
+        semiformal_stripped = self.semiformal_code.strip() if self.semiformal_code else ""
+        if not semiformal_stripped:
+            # Empty or whitespace-only code - re-initialize to reset state
+            init_result = self.initialize(self.semiformal_code)
+            return {
+                'success': True,
+                'python_code': init_result['python_code'],
+                'message': 'Reset mappings - all semiformal code removed',
+                'needs_regeneration': False,
+                'regeneration_targets': [],
+            }
+        
+        # Also check if parsing results in no nodes (e.g., only comments/whitespace)
+        # This catches cases where code exists but has no parseable content
+        parsed_nodes = self.parser.parse(self.semiformal_code)
+        if not parsed_nodes:
+            # No parseable content - re-initialize to reset state
+            init_result = self.initialize(self.semiformal_code)
+            return {
+                'success': True,
+                'python_code': init_result['python_code'],
+                'message': 'Reset mappings - no parseable content',
                 'needs_regeneration': False,
                 'regeneration_targets': [],
             }
