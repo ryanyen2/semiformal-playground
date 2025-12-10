@@ -16,9 +16,15 @@ import {
   cursorMappingStateField,
   pythonLineStateField,
   pythonLineDecorationsField,
+  unmappedCodeStateField,
+  unmappedCodeDecorationsField,
+  changedLinesStateField,
+  changedLinesGutter,
   updateNodeDecorations,
   updateCursorMapping,
   updatePythonLineHighlight,
+  updateUnmappedCodeRegions,
+  updateChangedLines,
   findNodeAtCursor,
   findMappingForNode
 } from './decorations'
@@ -26,13 +32,7 @@ import { api, IntentNode, NodeMapping } from './api'
 import { ASTViewer } from './ast-viewer'
 
 // Initial example code
-const EXAMPLE_SPEC = `result = load the dataset and process it
-
-output = transform(result)
-
-x, y = {split data into train and test}
-
-print(output)
+const EXAMPLE_SPEC = `
 `
 
 // Application state
@@ -49,6 +49,216 @@ let currentMappings: NodeMapping[] = []
 let lastSpecCode = ''
 let lastPythonCode = ''
 let hasLLM = false
+let currentInferredInsertions: Array<{code: string, insert_line: number | null, func_name: string}> = []
+let lastInsertedFunctions = new Set<string>()
+let isInsertingInferredCode = false  // Flag to prevent insertion loops
+let inferredInsertionAttempts = 0  // Counter to prevent infinite loops
+const MAX_INSERTION_ATTEMPTS = 3  // Maximum number of insertion cycles
+let lastInsertionHash = ''  // Hash of last insertion to detect duplicates
+let insertionCooldownUntil = 0  // Timestamp when cooldown ends
+
+/**
+ * Check if a function definition already exists in the spec
+ */
+function functionExistsInSpec(content: string, funcName: string, funcSignature?: string): boolean {
+  // Check for function definition pattern: def func_name(
+  const funcDefPattern = new RegExp(`^\\s*def\\s+${funcName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\s*\\(`, 'm')
+  if (funcDefPattern.test(content)) {
+    return true
+  }
+  
+  // Also check for exact signature match if provided
+  if (funcSignature) {
+    const normalizedSig = funcSignature.trim().replace(/\s+/g, ' ')
+    const lines = content.split('\n')
+    for (const line of lines) {
+      const normalizedLine = line.trim().replace(/\s+/g, ' ')
+      if (normalizedLine.startsWith('def ') && normalizedLine.includes(funcName + '(')) {
+        // Extract signature from line
+        const sigMatch = normalizedLine.match(/def\s+\w+\s*\([^)]*\)/)
+        if (sigMatch && sigMatch[0] === normalizedSig) {
+          return true
+        }
+      }
+    }
+  }
+  
+  return false
+}
+
+/**
+ * Automatically insert inferred code to spec editor at the correct position
+ * Also handles function body replacements for existing stubs
+ */
+function insertInferredCodeToSpec(insertions: Array<{
+  code: string, 
+  insert_line: number | null, 
+  func_name: string,
+  is_replacement?: boolean,
+  replace_start_line?: number,
+  replace_end_line?: number
+}>) {
+  if (!insertions || insertions.length === 0) return
+  if (isInsertingInferredCode) return  // Prevent recursive insertion
+  
+  // Check if we're in cooldown period
+  const now = Date.now()
+  if (now < insertionCooldownUntil) {
+    const remainingSeconds = Math.ceil((insertionCooldownUntil - now) / 1000)
+    console.warn(`In cooldown period, ${remainingSeconds}s remaining. Skipping insertion to prevent loop.`)
+    return
+  }
+  
+  // Check insertion attempts limit
+  if (inferredInsertionAttempts >= MAX_INSERTION_ATTEMPTS) {
+    console.warn(`Reached maximum insertion attempts (${MAX_INSERTION_ATTEMPTS}), entering 10s cooldown to prevent loop`)
+    insertionCooldownUntil = now + 10000  // 10 second cooldown
+    inferredInsertionAttempts = 0  // Reset for next cycle
+    return
+  }
+  
+  // Create a hash of the insertions to detect duplicates
+  const insertionHash = insertions.map(i => `${i.func_name}:${i.code.substring(0, 50)}`).join('|')
+  if (insertionHash === lastInsertionHash) {
+    console.warn('Duplicate insertion detected, skipping to prevent loop')
+    return
+  }
+  
+  isInsertingInferredCode = true
+  inferredInsertionAttempts++
+  lastInsertionHash = insertionHash
+  
+  try {
+    const currentContent = getEditorContent(specEditor)
+    const lines = currentContent.split('\n')
+    let newContent = currentContent
+    let hasChanges = false
+    
+    // Sort insertions by insert_line (nulls last, descending order to insert from bottom up)
+    const sortedInsertions = [...insertions].sort((a, b) => {
+      if (a.insert_line === null && b.insert_line === null) return 0
+      if (a.insert_line === null) return 1
+      if (b.insert_line === null) return -1
+      return b.insert_line - a.insert_line  // Descending order
+    })
+    
+    for (const insertion of sortedInsertions) {
+      const funcName = insertion.func_name
+      const code = insertion.code.trim()
+      const isReplacement = insertion.is_replacement || false
+      
+      // Handle replacement (update existing function body)
+      if (isReplacement && insertion.replace_start_line !== undefined && insertion.replace_end_line !== undefined) {
+        const startLine = insertion.replace_start_line  // 0-indexed
+        const endLine = insertion.replace_end_line  // 0-indexed
+        
+        if (startLine >= 0 && endLine >= startLine && endLine < lines.length) {
+          // Remove old function
+          lines.splice(startLine, endLine - startLine + 1)
+          // Insert new function at same position
+          lines.splice(startLine, 0, ...code.split('\n'))
+          hasChanges = true
+          lastInsertedFunctions.add(funcName)
+          console.log(`Replaced function body for: ${funcName}`)
+          continue
+        } else {
+          console.warn(`Invalid replacement range for ${funcName}: ${startLine}-${endLine}`)
+          // Fall through to insertion logic
+        }
+      }
+      
+      // Skip standalone insertions that start with __standalone_
+      if (funcName.startsWith('__standalone_')) {
+        // For standalone code, check if it's already present more carefully
+        const codeLines = code.split('\n')
+        const firstLine = codeLines[0]?.trim()
+        if (firstLine && currentContent.includes(firstLine)) {
+          continue
+        }
+      } else {
+        // For function definitions, check if function already exists
+        // Extract function signature from code
+        const funcSigMatch = code.match(/^def\s+\w+\s*\([^)]*\)/)
+        const funcSignature = funcSigMatch ? funcSigMatch[0] : undefined
+        
+        if (functionExistsInSpec(currentContent, funcName, funcSignature)) {
+          lastInsertedFunctions.add(funcName)
+          continue
+        }
+        
+        // Also check if we've already inserted this function in this session
+        if (lastInsertedFunctions.has(funcName)) {
+          continue
+        }
+      }
+      
+      // Determine insertion position
+      let insertPos: number
+      
+      if (insertion.insert_line !== null && insertion.insert_line > 0) {
+        // Insert above the call site (1-based line number)
+        // Convert to 0-based index
+        const lineIndex = insertion.insert_line - 1
+        if (lineIndex >= 0 && lineIndex < lines.length) {
+          insertPos = lineIndex
+        } else {
+          // Invalid line, append at end
+          insertPos = lines.length
+        }
+      } else {
+        // No insert_line specified, append at end
+        insertPos = lines.length
+      }
+      
+      // Insert the function definition
+      // Add separator before if needed
+      if (insertPos > 0 && lines[insertPos - 1].trim() !== '') {
+        // Add blank line before if previous line is not empty
+        lines.splice(insertPos, 0, '')
+        insertPos += 1
+      }
+      lines.splice(insertPos, 0, ...code.split('\n'))
+      hasChanges = true
+      
+      // Mark as inserted (for function definitions)
+      if (!funcName.startsWith('__standalone_')) {
+        lastInsertedFunctions.add(funcName)
+      }
+    }
+  
+  if (hasChanges) {
+    newContent = lines.join('\n')
+    
+    // Update editor content
+    specEditor.dispatch({
+      changes: {
+        from: 0,
+        to: specEditor.state.doc.length,
+        insert: newContent
+      }
+    })
+    
+    // Trigger parse (which will regenerate code)
+    // Use a small delay to ensure the editor update is complete
+    setTimeout(() => {
+      isInsertingInferredCode = false
+      parseCode(newContent)
+    }, 100)
+  } else {
+    // No changes made - reset counters since we're not causing a regeneration
+    isInsertingInferredCode = false
+    inferredInsertionAttempts = 0
+    lastInsertionHash = ''
+  }
+  } finally {
+    // Ensure flag is reset even if there's an error
+    if (isInsertingInferredCode) {
+      setTimeout(() => {
+        isInsertingInferredCode = false
+      }, 200)
+    }
+  }
+}
 
 /**
  * UI status helpers
@@ -92,7 +302,7 @@ function setLLMStatus(available: boolean) {
   const llmStatus = document.getElementById('llm-status')
   if (llmStatus) {
     llmStatus.textContent = available ? 'LLM: available' : 'LLM: not configured'
-    llmStatus.style.color = available ? '#4ec9b0' : '#858585'
+    llmStatus.style.color = available ? '#28a745' : '#586069'
   }
 }
 
@@ -149,9 +359,63 @@ async function applySemiformalEdit(oldCode: string, newCode: string) {
     const state = await api.getState()
     currentNodes = state.nodes
     currentMappings = state.mappings
+    
+    // Update changed lines if available
+    if (editResult.changed_lines && editResult.changed_lines.length > 0) {
+      updateChangedLines(codeEditor, editResult.changed_lines)
+    } else {
+      updateChangedLines(codeEditor, [])
+    }
+
+    // Update inferred insertions and automatically insert them at correct positions
+    // Only insert if we're not already in an insertion cycle
+    if (!isInsertingInferredCode) {
+      const inferredInsertions = editResult.inferred_insertions || state.inferred_insertions || []
+      if (inferredInsertions.length > 0) {
+        // Only insert if we have new insertions that aren't already in the spec
+        const insertionKeys = new Set(inferredInsertions.map(i => i.func_name))
+        const currentKeys = new Set(currentInferredInsertions.map(i => i.func_name))
+        
+        // Check if we have genuinely new insertions
+        const hasNewInsertions = insertionKeys.size !== currentKeys.size || 
+            !Array.from(insertionKeys).every(k => currentKeys.has(k))
+        
+        if (hasNewInsertions) {
+          // Also verify that these functions don't already exist in the spec
+          const currentContent = getEditorContent(specEditor)
+          const trulyNew = inferredInsertions.filter(ins => {
+            if (ins.func_name.startsWith('__standalone_')) {
+              return true  // Always check standalone
+            }
+            const funcSigMatch = ins.code.match(/^def\s+\w+\s*\([^)]*\)/)
+            const funcSignature = funcSigMatch ? funcSigMatch[0] : undefined
+            return !functionExistsInSpec(currentContent, ins.func_name, funcSignature)
+          })
+          
+          if (trulyNew.length > 0) {
+            currentInferredInsertions = inferredInsertions
+            // Automatically insert inferred code at the correct positions
+            insertInferredCodeToSpec(trulyNew)
+          } else {
+            // Update tracking even if we don't insert
+            currentInferredInsertions = inferredInsertions
+          }
+        } else {
+          // Update tracking
+          currentInferredInsertions = inferredInsertions
+        }
+      }
+    }
 
     // Update decorations
     updateNodeDecorations(specEditor, currentNodes)
+    
+    // Update unmapped code decorations in Python editor
+    if (state.unmapped_code && state.unmapped_code.length > 0) {
+      updateUnmappedCodeRegions(codeEditor, state.unmapped_code)
+    } else {
+      updateUnmappedCodeRegions(codeEditor, [])
+    }
 
     // Update AST viewer
     astViewer.updateTree(currentNodes, currentMappings)
@@ -320,6 +584,14 @@ function handleSpecChange() {
     clearTimeout(parseTimeout)
   }
 
+  // Reset insertion tracking when user manually edits the spec
+  // (Unless we're in the middle of an auto-insertion)
+  if (!isInsertingInferredCode) {
+    inferredInsertionAttempts = 0
+    lastInsertionHash = ''
+    insertionCooldownUntil = 0  // Clear cooldown on manual edit
+  }
+
   // Set new timeout for 1 second
   parseTimeout = window.setTimeout(() => {
     const semiformalCode = getEditorContent(specEditor)
@@ -372,7 +644,8 @@ async function init() {
         }
       })
     ],
-    false
+    false,
+    true // Enable semiformal syntax highlighting for spec editor
   )
 
   // Create code editor
@@ -387,7 +660,11 @@ async function init() {
     '# Press Cmd+S in the left editor to generate Python code',
     [
       pythonLineStateField,
-      pythonLineDecorationsField
+      pythonLineDecorationsField,
+      unmappedCodeStateField,
+      unmappedCodeDecorationsField,
+      changedLinesStateField,
+      changedLinesGutter  // Add gutter for changed lines
     ],
     false
   )

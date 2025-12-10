@@ -69,6 +69,9 @@ class StateResponse(BaseModel):
     python_code: str
     nodes: List[Dict[str, Any]]
     mappings: List[Dict[str, Any]]
+    unmapped_code: List[Dict[str, Any]] = []
+    inferred_semiformal: str = ""
+    inferred_insertions: List[Dict[str, Any]] = []
     has_llm: bool
 
 
@@ -142,7 +145,7 @@ async def edit_semiformal(request: EditRequest):
         if "previous_semiformal_code" not in metadata:
             metadata["previous_semiformal_code"] = previous_semiformal
 
-        if editor.translator is None:
+        if request.content.strip() == '':
             init_result = editor.initialize(request.semiformal_code)
             return EditResponse(
                 success=True,

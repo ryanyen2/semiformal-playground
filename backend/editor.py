@@ -8,6 +8,7 @@ Main orchestrator that ties together:
 - Direct operations (AST manipulation)
 """
 
+import re
 from typing import List, Dict, Any, Optional
 from parser import SemiformalParser, IntentNode
 from generator import CodeGenerator, Mapping
@@ -49,6 +50,9 @@ class BidirectionalEditor:
         self.python_code = ""
         self.intent_nodes: List[IntentNode] = []
         self.mappings: List[Mapping] = []
+        self.unmapped_code: List[Dict[str, Any]] = []
+        self.inferred_semiformal: str = ""
+        self.inferred_insertions: List[Dict[str, Any]] = []
 
     def initialize(self, semiformal_code: str) -> Dict[str, Any]:
         """
@@ -66,17 +70,41 @@ class BidirectionalEditor:
         Returns:
             Dict with python_code, nodes, and mappings
         """
+        if not semiformal_code.strip():
+            # Empty code - reset all state
+            self.semiformal_code = semiformal_code
+            self.python_code = ""
+            self.intent_nodes = []
+            self.mappings = []
+            self.unmapped_code = []
+            self.inferred_semiformal = ""
+            self.inferred_insertions = []
+            self.translator = None
+            return {
+                'success': True,
+                'python_code': '',
+                'nodes': [],
+                'mappings': [],
+                'unmapped_code': [],
+                'inferred_semiformal': '',
+                'message': 'No semiformal code provided'
+            }
+            
         self.semiformal_code = semiformal_code
 
         # Step 1: Parse
         self.intent_nodes = self.parser.parse(semiformal_code)
 
         # Step 2: Generate Python (full generation, no existing code)
-        self.python_code, self.mappings = self.generator.generate_with_mapping(
+        self.python_code, self.mappings, self.unmapped_code, inferred_semiformal, inferred_insertions = self.generator.generate_with_mapping(
             self.intent_nodes,
             context=semiformal_code,
             existing_python=""  # Empty for full generation
         )
+        
+        # Store inferred semiformal code for surfacing back to user
+        self.inferred_semiformal = inferred_semiformal
+        self.inferred_insertions = inferred_insertions
 
         # Step 3: Set up translator
         self.translator = EditTranslator(
@@ -121,20 +149,44 @@ class BidirectionalEditor:
                 'regeneration_targets': [],
             }
 
-        # Check if all semiformal code has been removed - if so, re-initialize
-        # to reset mappings and state. This handles the case where user deletes
-        # all content and we need to start fresh.
+        # Check 1: If semiformal code is empty (after trim), clear all prior generated Python code
+        # This means restarting a new session
         semiformal_stripped = self.semiformal_code.strip() if self.semiformal_code else ""
         if not semiformal_stripped:
-            # Empty or whitespace-only code - re-initialize to reset state
-            init_result = self.initialize(self.semiformal_code)
+            # Empty or whitespace-only code - clear Python code and reset state
+            self.python_code = ""
+            self.mappings = []
+            self.intent_nodes = []
+            self.unmapped_code = []
+            self.inferred_semiformal = ""
+            self.inferred_insertions = []
+            # Reset translator to None so next edit will re-initialize
+            self.translator = None
             return {
                 'success': True,
-                'python_code': init_result['python_code'],
-                'message': 'Reset mappings - all semiformal code removed',
+                'python_code': '',
+                'message': 'Semiformal code is empty - cleared all prior generated code',
                 'needs_regeneration': False,
                 'regeneration_targets': [],
             }
+        
+        # Check 2: If semiformal code content is the same as previous (after trim, content only)
+        # Skip generation to avoid unnecessary LLM calls
+        previous_semiformal = edit.metadata.get("previous_semiformal_code", "")
+        if previous_semiformal:
+            # Normalize both versions: trim and compare content (ignore line breaks and extra whitespace)
+            current_normalized = self._normalize_content(self.semiformal_code)
+            previous_normalized = self._normalize_content(previous_semiformal)
+            
+            if current_normalized == previous_normalized:
+                # Content is the same - skip generation
+                return {
+                    'success': True,
+                    'python_code': self.python_code,
+                    'message': 'Semiformal code unchanged - skipping generation',
+                    'needs_regeneration': False,
+                    'regeneration_targets': [],
+                }
         
         # Also check if parsing results in no nodes (e.g., only comments/whitespace)
         # This catches cases where code exists but has no parseable content
@@ -156,7 +208,7 @@ class BidirectionalEditor:
             self.semiformal_code,
             self.python_code
         )
-        print('editor result', result)
+        # print('editor result', result)
 
         if result.success:
             # Apply the edit
@@ -171,13 +223,21 @@ class BidirectionalEditor:
                 self.mappings = result.new_mappings  # type: ignore[assignment]
                 # Update translator's internal mapping dict
                 self.translator.mappings = {m.node_id: m for m in self.mappings}
+            if result.new_unmapped_code is not None:
+                self.unmapped_code = result.new_unmapped_code
+            if result.inferred_semiformal is not None:
+                self.inferred_semiformal = result.inferred_semiformal
+            if result.inferred_insertions is not None:
+                self.inferred_insertions = result.inferred_insertions
 
         return {
             'success': result.success,
             'python_code': self.python_code,
             'message': result.message,
             'needs_regeneration': result.needs_regeneration,
-            'regeneration_targets': result.regeneration_targets
+            'regeneration_targets': result.regeneration_targets,
+            'inferred_semiformal': result.inferred_semiformal if result.inferred_semiformal else self.inferred_semiformal,
+            'inferred_insertions': result.inferred_insertions if result.inferred_insertions else self.inferred_insertions
         }
 
     def on_python_edit(self, edit: Edit) -> Dict[str, Any]:
@@ -275,8 +335,33 @@ class BidirectionalEditor:
             'python_code': self.python_code,
             'nodes': [self._node_to_dict(node) for node in self.intent_nodes],
             'mappings': [self._mapping_to_dict(mapping) for mapping in self.mappings],
+            'unmapped_code': self.unmapped_code,
+            'inferred_semiformal': self.inferred_semiformal,
+            'inferred_insertions': self.inferred_insertions,
             'has_llm': getattr(self.generator.llm_service, "client", None) is not None
         }
+
+    @staticmethod
+    def _normalize_content(content: str) -> str:
+        """
+        Normalize content for comparison by:
+        1. Trimming leading/trailing whitespace
+        2. Replacing all whitespace sequences (spaces, tabs, newlines) with single spaces
+        
+        This allows comparison that ignores line breaks and extra whitespace,
+        focusing only on the actual content.
+        
+        Args:
+            content: The content to normalize
+            
+        Returns:
+            Normalized content string
+        """
+        # Strip leading/trailing whitespace
+        trimmed = content.strip()
+        # Replace all whitespace sequences (spaces, tabs, newlines) with single space
+        normalized = re.sub(r'\s+', ' ', trimmed)
+        return normalized
 
     def _node_to_dict(self, node: IntentNode) -> Dict[str, Any]:
         """Convert IntentNode to dict for JSON serialization"""

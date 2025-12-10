@@ -32,6 +32,9 @@ export interface EditResponse {
   message: string
   needs_regeneration?: boolean
   regeneration_targets?: string[]
+  inferred_semiformal?: string
+  inferred_insertions?: Array<{code: string, insert_line: number | null, func_name: string}>
+  changed_lines?: number[]  // Line numbers that were added/modified (for gutter decorations)
 }
 
 export interface PythonEditResponse {
@@ -41,11 +44,21 @@ export interface PythonEditResponse {
   suggestion?: string
 }
 
+export interface UnmappedCodeRegion {
+  line: number
+  col: number
+  length: number
+  text: string
+}
+
 export interface StateResponse {
   semiformal_code: string
   python_code: string
   nodes: IntentNode[]
   mappings: NodeMapping[]
+  unmapped_code: UnmappedCodeRegion[]
+  inferred_semiformal: string
+  inferred_insertions: Array<{code: string, insert_line: number | null, func_name: string}>
   has_llm: boolean
 }
 

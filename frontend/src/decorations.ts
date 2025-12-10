@@ -2,15 +2,16 @@
  * CodeMirror decorations for semiformal programming with node mappings.
  */
 
-import { Decoration, DecorationSet, EditorView, WidgetType } from '@codemirror/view'
+import { Decoration, DecorationSet, EditorView, WidgetType, GutterMarker, gutter } from '@codemirror/view'
 import { RangeSetBuilder, StateField, StateEffect } from '@codemirror/state'
-import type { IntentNode, NodeMapping } from './api'
+import type { IntentNode, NodeMapping, UnmappedCodeRegion } from './api'
 
 /**
  * State effect to update decorations
  */
 export const updateNodesEffect = StateEffect.define<IntentNode[]>()
 export const updateCursorMappingEffect = StateEffect.define<number | null>()
+export const updateChangedLinesEffect = StateEffect.define<number[]>()  // NEW: Track changed lines
 
 /**
  * Create decorations based on intent nodes
@@ -319,7 +320,7 @@ class PythonLineMarkerWidget extends WidgetType {
       width: 3px;
       height: 100%;
       left: 0;
-      background: linear-gradient(to right, #528bff, transparent);
+      background: linear-gradient(to right, #0366d6, transparent);
     `
     return span
   }
@@ -360,5 +361,180 @@ export function updatePythonLineHighlight(
   // The effect will be handled by the state field's update method
   view.dispatch({
     effects: updatePythonLineEffect.of(highlight)
+  })
+}
+
+/**
+ * State effect to update unmapped code regions
+ */
+export const updateUnmappedCodeEffect = StateEffect.define<UnmappedCodeRegion[]>()
+
+/**
+ * State field for storing unmapped code regions
+ */
+export const unmappedCodeStateField = StateField.define<UnmappedCodeRegion[]>({
+  create() {
+    return []
+  },
+  update(regions, tr) {
+    for (const effect of tr.effects) {
+      if (effect.is(updateUnmappedCodeEffect)) {
+        return effect.value
+      }
+    }
+    return regions
+  }
+})
+
+/**
+ * Create decorations for unmapped code regions (with reduced opacity)
+ */
+function createUnmappedCodeDecorations(
+  doc: { lines: number; line: (n: number) => { from: number; to: number; text: string } },
+  regions: UnmappedCodeRegion[]
+): DecorationSet {
+  if (!regions || regions.length === 0) {
+    return Decoration.none
+  }
+
+  const builder = new RangeSetBuilder<Decoration>()
+
+  for (const region of regions) {
+    // Skip invalid regions
+    if (region.line < 1 || region.line > doc.lines) {
+      continue
+    }
+
+    const line = doc.line(region.line)
+    
+    // Calculate position
+    const from = line.from + region.col
+    const to = Math.min(from + region.length, line.to)
+
+    // Validate positions
+    if (from < line.from || from > line.to || to < from) {
+      continue
+    }
+
+    // Add decoration with reduced opacity
+    builder.add(
+      from,
+      to,
+      Decoration.mark({
+        class: 'cm-unmapped-code',
+        attributes: {
+          'data-unmapped-line': String(region.line),
+          'data-unmapped-col': String(region.col)
+        }
+      })
+    )
+  }
+
+  return builder.finish()
+}
+
+/**
+ * State field for unmapped code decorations
+ */
+export const unmappedCodeDecorationsField = StateField.define<DecorationSet>({
+  create() {
+    return Decoration.none
+  },
+  update(decorations, tr) {
+    decorations = decorations.map(tr.changes)
+
+    for (const effect of tr.effects) {
+      if (effect.is(updateUnmappedCodeEffect)) {
+        const regions = effect.is(updateUnmappedCodeEffect)
+          ? effect.value
+          : tr.state.field(unmappedCodeStateField)
+        decorations = createUnmappedCodeDecorations(tr.state.doc, regions)
+      }
+    }
+
+    return decorations
+  },
+  provide: f => EditorView.decorations.from(f)
+})
+
+/**
+ * Update unmapped code regions
+ */
+export function updateUnmappedCodeRegions(
+  view: EditorView,
+  regions: UnmappedCodeRegion[]
+) {
+  view.dispatch({
+    effects: updateUnmappedCodeEffect.of(regions)
+  })
+}
+
+// ============================================================================
+// Changed Lines Gutter Decorations (Green bar for new/modified lines)
+// ============================================================================
+
+/**
+ * State field for tracking changed lines
+ */
+export const changedLinesStateField = StateField.define<number[]>({
+  create() {
+    return []
+  },
+  update(lines, tr) {
+    for (const effect of tr.effects) {
+      if (effect.is(updateChangedLinesEffect)) {
+        return effect.value
+      }
+    }
+    return lines
+  }
+})
+
+/**
+ * Gutter marker for changed lines (green bar)
+ */
+class ChangedLineMarker extends GutterMarker {
+  toDOM() {
+    const marker = document.createElement('div')
+    marker.style.width = '3px'
+    marker.style.height = '100%'
+    marker.style.backgroundColor = '#22c55e'  // Green color
+    marker.style.marginLeft = '-3px'
+    marker.title = 'Modified or added line'
+    return marker
+  }
+}
+
+const changedLineMarker = new ChangedLineMarker()
+
+/**
+ * Gutter extension for showing changed lines
+ */
+export const changedLinesGutter = gutter({
+  class: 'cm-changed-lines-gutter',
+  markers: view => {
+    const changedLines = view.state.field(changedLinesStateField)
+    const builder = new RangeSetBuilder<GutterMarker>()
+    
+    for (const lineNum of changedLines) {
+      if (lineNum > 0 && lineNum <= view.state.doc.lines) {
+        const line = view.state.doc.line(lineNum)
+        builder.add(line.from, line.from, changedLineMarker)
+      }
+    }
+    
+    return builder.finish()
+  }
+})
+
+/**
+ * Update changed lines
+ */
+export function updateChangedLines(
+  view: EditorView,
+  changedLines: number[]
+) {
+  view.dispatch({
+    effects: updateChangedLinesEffect.of(changedLines)
   })
 }

@@ -16,6 +16,10 @@ from parser import IntentNode
 from config import MVPConfig, DEFAULT_CONFIG
 from llm_service import LLMService
 from postprocessing import CodePostprocessor
+from dataflow_graph import (
+    DataFlowGraph, GraphBuilder, ChangeDetector, 
+    UpdatePropagator, UpdateSpec, NodeKind
+)
 
 
 # ============================================================================
@@ -30,12 +34,15 @@ def create_annotated_semiformal_text(
     Convert parsed nodes into annotated text format with anchor comments.
     
     Input: List of parsed nodes (IntentNode objects)
-    Output: Text with anchor comments above each line
+    Output: Text with anchor comments above each line (for semiformal spec format)
+    
+    Note: This creates the semiformal spec format with anchors above lines.
+    The LLM will then generate Python code with anchors inline at the end of lines.
     
     Example:
         Input nodes on line 1: [identifier "result", nl_phrase "load", ...]
-        Output:
-            # result; load; dataset; process it
+        Output (semiformal format):
+            #> result; load; dataset; process it
             result = load the dataset and process it
     """
     # Group nodes by line number
@@ -252,6 +259,118 @@ def get_original_statement(line_num: int, original_text: str) -> str:
     return ""
 
 
+def strip_function_bodies_for_regeneration(
+    semiformal_code: str,
+    functions_to_regenerate: Set[str]
+) -> str:
+    """
+    Strip function bodies for functions that need regeneration.
+    
+    This prevents LLM from treating existing stub implementations as user specification.
+    The LLM should generate fresh implementations based on new context/dependencies,
+    not be biased by throwaway prior code.
+    
+    Replaces function body with a pass statement to maintain valid Python syntax.
+    Preserves function signature (def line with parameters and anchor comments).
+    
+    Works with both valid Python and semiformal code (with NL phrases, holes, etc).
+    
+    Args:
+        semiformal_code: The semiformal code with stub functions
+        functions_to_regenerate: Set of function names that need regeneration
+        
+    Returns:
+        Modified semiformal code with stripped function bodies
+    """
+    if not functions_to_regenerate:
+        return semiformal_code
+    
+    lines = semiformal_code.split('\n')
+    result_lines = []
+    
+    # Track state as we scan through lines
+    current_function = None
+    function_def_indent = 0
+    in_function_body = False
+    
+    i = 0
+    while i < len(lines):
+        line = lines[i]
+        stripped_line = line.lstrip()
+        current_indent = len(line) - len(stripped_line)
+        
+        # Check if this is a function definition line
+        if stripped_line.startswith('def '):
+            # Extract function name
+            match = re.match(r'def\s+(\w+)\s*\(', stripped_line)
+            if match:
+                func_name = match.group(1)
+                
+                # Check if this function needs stripping
+                if func_name in functions_to_regenerate:
+                    # Keep the def line
+                    result_lines.append(line)
+                    
+                    # Remember we're in a function that needs stripping
+                    current_function = func_name
+                    function_def_indent = current_indent
+                    in_function_body = True
+                    
+                    # Peek ahead to determine body indentation
+                    # Look at the next non-empty, non-comment line
+                    body_indent = function_def_indent + 4  # default
+                    for j in range(i + 1, min(i + 10, len(lines))):
+                        next_line = lines[j]
+                        next_stripped = next_line.lstrip()
+                        if next_stripped and not next_stripped.startswith('#'):
+                            next_indent = len(next_line) - len(next_stripped)
+                            if next_indent > function_def_indent:
+                                body_indent = next_indent
+                                break
+                    
+                    # Add pass statement
+                    result_lines.append(' ' * body_indent + 'pass  # body omitted - will be regenerated')
+                    
+                    # Skip ahead to find where the function ends
+                    # Function ends when we see a line at same or lower indentation
+                    i += 1
+                    while i < len(lines):
+                        next_line = lines[i]
+                        next_stripped = next_line.lstrip()
+                        
+                        # Skip empty lines and comments
+                        if not next_stripped or next_stripped.startswith('#'):
+                            i += 1
+                            continue
+                        
+                        next_indent = len(next_line) - len(next_stripped)
+                        
+                        # If we're back at or below function def indent, function is over
+                        if next_indent <= function_def_indent:
+                            current_function = None
+                            in_function_body = False
+                            break
+                        
+                        # Otherwise, skip this line (it's part of the body)
+                        i += 1
+                    
+                    # Don't increment i at the end since we already positioned it
+                    continue
+                else:
+                    # Not stripping this function, keep the line
+                    result_lines.append(line)
+                    i += 1
+                    continue
+        
+        # If we're not in a function being stripped, keep the line
+        if not in_function_body or current_function is None:
+            result_lines.append(line)
+        
+        i += 1
+    
+    return '\n'.join(result_lines)
+
+
 @dataclass
 class CodeSlice:
     """Represents a slice of generated Python code"""
@@ -300,6 +419,12 @@ class CodeGenerator:
         self.generate_implementations = generate_implementations
         self.llm_service = LLMService(openai_api_key, config)
         self.postprocessor = CodePostprocessor()
+        
+        # DAG-based dependency tracking (replaces heuristic context analyzer)
+        self.graph_builder = GraphBuilder()
+        self.change_detector = ChangeDetector()
+        self.update_propagator = UpdatePropagator()
+        self.previous_graph: Optional[DataFlowGraph] = None
     
     @staticmethod
     def _extract_imports(code: str) -> List[str]:
@@ -347,20 +472,77 @@ class CodeGenerator:
         focus_nodes: Optional[List[IntentNode]] = None,
         trigger_type: str = "initial",
         previous_semiformal: str = ""
-    ) -> Tuple[str, List[Mapping]]:
+    ) -> Tuple[str, List[Mapping], List[Dict[str, Any]], str, List[Dict[str, Any]]]:
         """
-        Generate Python code from intent nodes using single LLM call.
+        Generate Python code from intent nodes using DAG-based dependency analysis.
 
         Args:
             nodes: List of intent nodes from parser
             context: Original semiformal code for context
             existing_python: Existing Python code (empty for full generation)
+            focus_nodes: Specific nodes to focus on
+            trigger_type: Type of trigger (initial, edit, etc.)
+            previous_semiformal: Previous semiformal code for change detection
 
         Returns:
-            (generated_code, mappings)
+            (generated_code, mappings, unmapped_code, inferred_semiformal, inferred_insertions)
         """
-        # Annotate semiformal code with parsed nodes
-        annotated_semiformal = self._annotate_semiformal_with_nodes(context, nodes)
+        # Build data flow graph from current nodes
+        current_graph = self.graph_builder.build_from_intent_nodes(nodes)
+        
+        # Detect changes compared to previous version
+        changes = self.change_detector.detect_changes(self.previous_graph, current_graph)
+        
+        # Compute what needs to be updated based on DAG traversal
+        update_spec = self.update_propagator.compute_update_spec(changes, current_graph)
+        
+        # Store current graph for next iteration
+        self.previous_graph = current_graph
+        
+        # Build generation context from update spec (generic, no hardcoded assumptions)
+        generation_context = self._build_generation_context_from_update_spec(
+            update_spec=update_spec,
+            graph=current_graph,
+            nodes=nodes
+        )
+        
+        # Identify functions that need regeneration (from DAG analysis)
+        functions_to_strip = self._identify_functions_to_regenerate(
+            update_spec=update_spec,
+            graph=current_graph,
+            nodes=nodes
+        )
+        
+        # Add functions_to_strip to context for LLM prompt building
+        generation_context['functions_to_strip'] = list(functions_to_strip)
+        
+        # Strip function bodies for functions requiring regeneration
+        # This prevents LLM from being biased by throwaway stub implementations
+        stripped_semiformal = strip_function_bodies_for_regeneration(
+            semiformal_code=context,
+            functions_to_regenerate=functions_to_strip
+        )
+        
+        # Re-parse the stripped code to get nodes with correct line numbers
+        # (stripping changes line numbers, so we need fresh node positions)
+        if functions_to_strip:
+            from parser import SemiformalParser
+            parser = SemiformalParser()
+            stripped_nodes = parser.parse(stripped_semiformal)
+        else:
+            stripped_nodes = nodes
+        
+        # Annotate semiformal code with parsed nodes (using stripped code and updated nodes)
+        annotated_semiformal = self._annotate_semiformal_with_nodes(stripped_semiformal, stripped_nodes)
+        
+        # Also strip function bodies from existing Python code
+        # This ensures LLM doesn't see old implementations in any context
+        stripped_existing_python = existing_python
+        if existing_python and functions_to_strip:
+            stripped_existing_python = strip_function_bodies_for_regeneration(
+                semiformal_code=existing_python,
+                functions_to_regenerate=functions_to_strip
+            )
         
         # Decide which IR nodes should be emphasized as targets for this call.
         # For initialization / full generation we include all NL / hole / call nodes.
@@ -375,17 +557,18 @@ class CodeGenerator:
         # Single LLM call: generate full code or diff
         llm_output, success = self.llm_service.generate_code(
             annotated_semiformal=annotated_semiformal,
-            existing_python=existing_python,
+            existing_python=stripped_existing_python,  # Use stripped existing code
             target_nodes=target_nodes_payload if target_nodes_payload else None,
             trigger_type=trigger_type,
             previous_semiformal=previous_semiformal,
+            generation_context=generation_context  # Pass DAG-derived context
         )
         
         if not success:
             # Fallback: use direct reconstruction for Python nodes
             fallback_code = self._fallback_generation(nodes, context)
             fallback_mappings = self._create_simple_mappings(nodes, fallback_code)
-            return fallback_code, fallback_mappings
+            return fallback_code, fallback_mappings, [], '', []
         
         # Use postprocessor for diff application, AST analysis, and mapping
         mode = 'diff' if existing_python and existing_python.strip() else 'full'
@@ -395,11 +578,21 @@ class CodeGenerator:
             llm_output=llm_output,
             mode=mode,
             existing_code=existing_python if mode == 'diff' else "",
-            parsed_nodes=parsed_nodes
+            parsed_nodes=parsed_nodes,
+            existing_semiformal=context  # Pass context (existing semiformal) for stub detection
         )
         
         final_code = post_result.get('code', existing_python if mode == 'diff' else llm_output)
         node_mapping = post_result.get('mapping', {})
+        unmapped_code = post_result.get('unmapped_code', [])
+        inferred_semiformal = post_result.get('inferred_semiformal', '')
+        inferred_insertions = post_result.get('inferred_insertions', [])
+        inferred_replacements = post_result.get('inferred_replacements', [])
+        
+        # Merge replacements into insertions with a flag for frontend handling
+        all_insertions = inferred_insertions + [
+            {**r, 'is_replacement': True} for r in inferred_replacements
+        ]
         
         # Convert postprocessor mapping dict → List[Mapping] (Mapping dataclass)
         mappings: List[Mapping] = []
@@ -430,7 +623,7 @@ class CodeGenerator:
                 generation_method='postprocessed_anchor_mapping'
             ))
         
-        return final_code, mappings
+        return final_code, mappings, unmapped_code, inferred_semiformal, all_insertions
 
     def _annotate_semiformal_with_nodes(
         self,
@@ -442,6 +635,9 @@ class CodeGenerator:
         
         Converts parsed nodes into annotated text format with anchor comments
         that serve as semantic anchors for code generation.
+        
+        Note: The semiformal spec format has anchors above lines (e.g., "#> anchor1; anchor2").
+        The LLM will generate Python code with these anchors inline at the end of lines.
         """
         return create_annotated_semiformal_text(nodes, semiformal_code)
     
@@ -668,3 +864,130 @@ class CodeGenerator:
         # Fallback
         parts = [n.content for n in nodes]
         return ' '.join(parts)
+    
+    def _identify_functions_to_regenerate(
+        self,
+        update_spec: UpdateSpec,
+        graph: DataFlowGraph,
+        nodes: List[IntentNode]
+    ) -> Set[str]:
+        """
+        Identify function names that need regeneration based on DAG analysis.
+        
+        Functions need regeneration if:
+        1. They are called by nodes in the regeneration set
+        2. Their signatures changed
+        3. Their dependencies changed
+        
+        Args:
+            update_spec: Update specification from DAG analysis
+            graph: Data flow graph
+            nodes: Parsed intent nodes
+            
+        Returns:
+            Set of function names to strip bodies from
+        """
+        functions_to_regenerate = set()
+        
+        # Get all nodes that need regeneration
+        nodes_to_regenerate = set(update_spec.nodes_to_regenerate)
+        
+        # Map function calls to function names
+        for node_id in nodes_to_regenerate:
+            node = graph.get_node(node_id)
+            if not node:
+                continue
+            
+            # If this is a function call, we need to regenerate the called function
+            if node.kind == NodeKind.FUNCTION_CALL:
+                func_name = node.value
+                # Check if this function is defined in the semiformal code (not a builtin/import)
+                if self._is_user_defined_function(func_name, nodes, graph):
+                    functions_to_regenerate.add(func_name)
+            
+            # If this is a function definition that changed, regenerate it
+            elif node.metadata.get('is_definition'):
+                func_name = node.value
+                functions_to_regenerate.add(func_name)
+        
+        return functions_to_regenerate
+    
+    def _is_user_defined_function(
+        self,
+        func_name: str,
+        nodes: List[IntentNode],
+        graph: DataFlowGraph
+    ) -> bool:
+        """
+        Check if a function is user-defined (defined in semiformal code).
+        
+        Returns True if the function is defined in the code, False if it's
+        a builtin, library function, or undefined.
+        """
+        # Check if any node defines this function
+        for node in nodes:
+            if node.type == 'function_def' and node.content == func_name:
+                return True
+        
+        # Check in graph for function definitions
+        for node in graph.nodes.values():
+            if (node.kind == NodeKind.FUNCTION_CALL and 
+                node.value == func_name and 
+                node.metadata.get('is_definition')):
+                return True
+        
+        # Common builtins and library functions that we shouldn't strip
+        common_functions = {
+            'print', 'len', 'range', 'enumerate', 'zip', 'map', 'filter',
+            'open', 'input', 'int', 'str', 'float', 'list', 'dict', 'set',
+            'sum', 'min', 'max', 'sorted', 'reversed', 'abs', 'round',
+            # Pandas/numpy/sklearn
+            'read_csv', 'DataFrame', 'Series', 'array', 'zeros', 'ones',
+            'StandardScaler', 'fit_transform', 'train_test_split',
+            'get_dummies', 'fillna', 'dropna', 'select_dtypes',
+            # Plotting
+            'plot', 'scatter', 'hist', 'show', 'figure', 'subplot'
+        }
+        
+        if func_name in common_functions:
+            return False
+        
+        # If we can't find it, assume it's user-defined if it looks like a valid identifier
+        return func_name.isidentifier()
+    
+    def _build_generation_context_from_update_spec(
+        self,
+        update_spec: UpdateSpec,
+        graph: DataFlowGraph,
+        nodes: List[IntentNode]
+    ) -> Dict[str, Any]:
+        """
+        Build generic generation context from DAG analysis.
+        
+        This is a principled, generic approach that works for any code structure,
+        not just specific datasets or use cases.
+        
+        Args:
+            update_spec: Update specification from DAG analysis
+            graph: Data flow graph
+            nodes: Parsed intent nodes
+            
+        Returns:
+            Dictionary with context information for LLM prompt
+        """
+        generation_context = {
+            'changes': [
+                {
+                    'type': change.change_type.value,
+                    'node_id': change.node_id,
+                    'affected_edge': change.affected_edge,
+                    'metadata': change.metadata
+                }
+                for change in update_spec.changes
+            ],
+            'nodes_to_regenerate': update_spec.nodes_to_regenerate,
+            'regeneration_order': update_spec.regeneration_order,
+            'node_contexts': update_spec.node_contexts
+        }
+        
+        return generation_context

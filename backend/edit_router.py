@@ -264,15 +264,18 @@ class EditTranslator:
         
         # Step 2: Route based on edit type
         # Python statement edits → try direct edit first
+        # NOTE: literal_change is excluded from direct edits because changing literals
+        # (e.g., dataset names) may require regenerating dependent function implementations
         if edit.type in ('python_statement_edit', 'python_assignment_edit', 'python_expression_edit',
-                          'identifier_rename', 'operator_change', 'literal_change', 'python_function_def_edit'):
+                          'identifier_rename', 'operator_change', 'python_function_def_edit'):
             result = self._direct_translate(edit, python_code)
             if result.success:
                 return result
             # If direct edit fails, fall back to regeneration
             print(f"[EditTranslator] Direct edit failed, falling back to LLM regeneration")
         
-        # NL/hole edits or failed direct edits → use LLM regeneration
+        # NL/hole edits, literal changes, or failed direct edits → use LLM regeneration
+        # Literal changes use LLM to ensure dependent functions are updated
         return self._llm_translate(edit, semiformal_code, python_code)
 
     def _is_direct_translatable(self, edit: Edit) -> bool:
@@ -416,19 +419,46 @@ class EditTranslator:
             )
 
         # Compute a focused set of nodes affected by this edit in the *new* IR.
-        # We primarily use the line number, falling back to simple content match.
+        # Include both directly edited nodes AND DAG-affected dependent nodes
         focus_nodes = []
+        focus_node_ids = set()
+        
+        # First, find directly edited nodes
         if edit.line is not None:
             for node in nodes:
                 if hasattr(node, "span") and node.span:
                     if node.span[0] <= edit.line <= node.span[1]:
                         focus_nodes.append(node)
+                        if hasattr(node, "id"):
+                            focus_node_ids.add(node.id)
 
         if not focus_nodes and edit.content:
             content_str = str(edit.content).strip()
             for node in nodes:
                 if getattr(node, "content", "") == content_str:
                     focus_nodes.append(node)
+                    if hasattr(node, "id"):
+                        focus_node_ids.add(node.id)
+        
+        # CRITICAL: Include DAG-affected dependent nodes (e.g., functions that depend on changed data)
+        # This ensures that when a literal changes (e.g., dataset name), all dependent functions are regenerated
+        try:
+            # Build DAG from current nodes to find dependencies
+            graph = self.generator.graph_builder.build_from_intent_nodes(nodes)
+            
+            # For each directly edited node, find all downstream dependents
+            for node_id in focus_node_ids:
+                if node_id in graph.nodes:
+                    # Get all nodes that depend on this node (transitively)
+                    dependents = graph.get_downstream_nodes(node_id)
+                    for dep_id in dependents:
+                        # Add dependent node to focus_nodes if not already included
+                        dep_node = next((n for n in nodes if hasattr(n, "id") and n.id == dep_id), None)
+                        if dep_node and dep_node not in focus_nodes:
+                            focus_nodes.append(dep_node)
+                            print(f"[EditTranslator] Including DAG-affected function: {dep_node.content}")
+        except Exception as e:
+            print(f"[EditTranslator] Warning: Could not build DAG for dependency analysis: {e}")
 
         # Determine a coarse trigger type to help the LLM understand context.
         # We no longer rely on completeness classification here; instead we use
@@ -447,7 +477,7 @@ class EditTranslator:
 
         # Use single LLM call with existing Python code (diff mode), telling the
         # generator which nodes to focus on.
-        new_code, mappings = self.generator.generate_with_mapping(
+        new_code, mappings, unmapped_code, inferred_semiformal, inferred_insertions = self.generator.generate_with_mapping(
             nodes=nodes,
             context=semiformal_code,
             existing_python=python_code,  # Pass existing code for diff generation
@@ -468,6 +498,9 @@ class EditTranslator:
             message=f"Generated code using LLM for '{edit.type}'",
             new_nodes=nodes,
             new_mappings=mappings,
+            new_unmapped_code=unmapped_code,
+            inferred_semiformal=inferred_semiformal,
+            inferred_insertions=inferred_insertions,
         )
 
 

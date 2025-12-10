@@ -427,9 +427,10 @@ class SemiformalParser:
 
         # General linguistic markers (not domain-specific)
         markers = {
-            'prepositions': ['into', 'from', 'to', 'with', 'by', 'for', 'using', 'via'],
-            'conjunctions': ['and', 'or', 'but', 'then'],
-            'articles': ['the', 'a', 'an'],
+            'prepositions': ['into', 'from', 'to', 'with', 'by', 'for', 'using', 'via', 'about', 'over', 'under', 'between'],
+            'conjunctions': ['and', 'or', 'but', 'then', 'so', 'because'],
+            'articles': ['the', 'a', 'an', 'some'],
+            'others': ['as', 'of', 'on', 'at', 'in', 'that', 'which', 'who']
         }
 
         all_markers = set()
@@ -553,17 +554,36 @@ class SemiformalParser:
                         if def_node.type == 'function_def' and def_node.content == node.content:
                             node.dependencies.append(def_node.id)
                             break
-
-
-def parse_semiformal(code: str) -> List[IntentNode]:
-    """
-    Convenience function to parse semiformal Python code.
-
-    Args:
-        code: Semiformal Python code
-
-    Returns:
-        List of IntentNode objects
-    """
-    parser = SemiformalParser()
-    return parser.parse(code)
+                
+                # Link function calls to their arguments (critical for dataflow!)
+                # Check positional arguments
+                if 'arg_node_ids' in node.metadata:
+                    for arg_id in node.metadata['arg_node_ids']:
+                        # Find the node with this ID
+                        for candidate in self.nodes:
+                            if candidate.id == arg_id:
+                                # If the argument is an identifier, link to its definition
+                                if candidate.type == 'identifier' and candidate.content in definitions:
+                                    def_node = definitions[candidate.content]
+                                    if def_node.id not in node.dependencies:
+                                        node.dependencies.append(def_node.id)
+                                # Also link directly to the argument node itself (for literals, expressions, etc.)
+                                elif candidate.id not in node.dependencies:
+                                    node.dependencies.append(candidate.id)
+                                break
+                
+                # Check keyword arguments
+                if 'kwarg_node_ids' in node.metadata:
+                    for param_name, arg_id in node.metadata['kwarg_node_ids'].items():
+                        # Find the node with this ID
+                        for candidate in self.nodes:
+                            if candidate.id == arg_id:
+                                # If the argument is an identifier, link to its definition
+                                if candidate.type == 'identifier' and candidate.content in definitions:
+                                    def_node = definitions[candidate.content]
+                                    if def_node.id not in node.dependencies:
+                                        node.dependencies.append(def_node.id)
+                                # Also link directly to the argument node itself (for literals, expressions, etc.)
+                                elif candidate.id not in node.dependencies:
+                                    node.dependencies.append(candidate.id)
+                                break

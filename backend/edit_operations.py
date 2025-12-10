@@ -11,7 +11,7 @@ Implements direct AST-based edits that don't require LLM:
 
 import ast
 from dataclasses import dataclass
-from typing import Optional, List
+from typing import Any, Optional, List, Dict
 
 
 @dataclass
@@ -26,6 +26,9 @@ class EditResult:
     # to update IR nodes and mappings after LLM-based regeneration.
     new_nodes: Optional[List] = None
     new_mappings: Optional[List] = None
+    new_unmapped_code: Optional[List[dict]] = None
+    inferred_semiformal: Optional[str] = None  # Semiformal code inferred from unmapped function bodies
+    inferred_insertions: Optional[List[Dict[str, Any]]] = None  # List of {'code': str, 'insert_line': int, 'func_name': str}
 
     def __post_init__(self):
         if self.regeneration_targets is None:

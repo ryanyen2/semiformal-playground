@@ -2,11 +2,14 @@
  * CodeMirror editor setup and configuration.
  */
 
-import { EditorView, basicSetup } from 'codemirror'
+import { EditorView, basicSetup, lineNumbers } from 'codemirror'
 import { python } from '@codemirror/lang-python'
 import { EditorState, Extension } from '@codemirror/state'
 import { keymap } from '@codemirror/view'
-import { defaultKeymap } from '@codemirror/commands'
+import { defaultKeymap, indentWithTab } from '@codemirror/commands'
+import { indentOnInput } from '@codemirror/language'
+import { basicLight } from '@fsegurai/codemirror-theme-basic-light'
+import { semiformalHighlighting } from './semiformal-lang'
 
 /**
  * Create a CodeMirror editor instance.
@@ -15,48 +18,39 @@ export function createEditor(
   parent: HTMLElement,
   initialDoc: string = '',
   extensions: Extension[] = [],
-  readOnly: boolean = false
+  readOnly: boolean = false,
+  enableSemiformalHighlighting: boolean = false
 ): EditorView {
+  const baseExtensions: Extension[] = [
+    basicSetup,
+    python(),
+    basicLight,
+    indentOnInput(),
+    keymap.of([
+      ...defaultKeymap,
+      indentWithTab  // Enable Tab for indentation
+    ]),
+    EditorView.editable.of(!readOnly),
+    EditorView.theme({
+      '&': {
+        height: '100%'
+      },
+      '.cm-content': {
+        fontFamily: '"Fira Code", "Consolas", "Monaco", monospace',
+        fontSize: '14px'
+      }
+    }),
+    ...extensions
+  ]
+  
+  // Add semiformal syntax highlighting only if requested
+  if (enableSemiformalHighlighting) {
+    baseExtensions.push(semiformalHighlighting())
+  }
+  
   const state = EditorState.create({
     doc: initialDoc,
-    extensions: [
-      basicSetup,
-      python(),
-      keymap.of(defaultKeymap),
-      EditorView.editable.of(!readOnly),
-      EditorView.theme({
-        '&': {
-          height: '100%',
-          backgroundColor: '#1e1e1e'
-        },
-        '.cm-content': {
-          fontFamily: '"Fira Code", "Consolas", "Monaco", monospace',
-          fontSize: '14px',
-          caretColor: '#528bff'
-        },
-        '.cm-gutters': {
-          backgroundColor: '#1e1e1e',
-          color: '#858585',
-          border: 'none'
-        },
-        '.cm-activeLineGutter': {
-          backgroundColor: '#2a2a2a'
-        },
-        '.cm-line': {
-          color: '#d4d4d4'
-        },
-        '&.cm-focused .cm-cursor': {
-          borderLeftColor: '#528bff'
-        },
-        '&.cm-focused .cm-selectionBackground, ::selection': {
-          backgroundColor: '#264f78'
-        },
-        '.cm-activeLine': {
-          backgroundColor: '#2a2a2a'
-        }
-      }),
-      ...extensions
-    ]
+    extensions: baseExtensions
   })
 
   return new EditorView({

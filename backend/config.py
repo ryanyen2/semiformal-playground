@@ -12,9 +12,9 @@ from dataclasses import dataclass, field
 @dataclass
 class LLMConfig:
     """Configuration for LLM (OpenAI) integration"""
-    model: str = "gpt-4o"  # Model to use
-    temperature: float = 0.2  # Temperature for generation
-    max_tokens: int = 1000  # Max tokens for completion
+    model: str = "gpt-5-mini"  # Model to use
+    temperature: float = 0.1  # Temperature for generation
+    max_tokens: int = 2048  # Max tokens for completion
     timeout: int = 30  # Timeout in seconds
 
 
